@@ -6,7 +6,7 @@ require (
 	github.com/djherbis/atime v1.1.0
 	github.com/prometheus/client_golang v1.16.0
 	github.com/sirupsen/logrus v1.9.3
-	k8s.io/utils v0.0.0-20230505201702-9f6742963106
+	github.com/twmb/murmur3 v1.1.8
 )
 
 require (

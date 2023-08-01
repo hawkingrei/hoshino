@@ -32,6 +32,7 @@ func monitorDiskAndEvict(
 	interval time.Duration,
 	minPercentBlocksFree, evictUntilPercentBlocksFree float64,
 ) {
+	c := diskutil.NewCache(diskRoot)
 	// forever check if usage is past thresholds and evict
 	ticker := time.NewTicker(interval)
 	for ; true; <-ticker.C {
@@ -60,7 +61,7 @@ func monitorDiskAndEvict(
 					logger.Fatal("Failed to find entries to evict!")
 				}
 				// pop entry and delete
-				var entry diskcache.EntryInfo
+				var entry diskutil.EntryInfo
 				entry, files = files[0], files[1:]
 				err = c.Delete(c.PathToKey(entry.Path))
 				if err != nil {

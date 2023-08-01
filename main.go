@@ -101,19 +101,9 @@ func main() {
 	pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	pprofAddr := fmt.Sprintf("%s:%d", *host, *pprofPort)
-	go func() {
-		logrus.Infof("pprof Listening on: %s", pprofAddr)
-		logrus.WithField("mux", "pprof").WithError(
-			http.ListenAndServe(pprofAddr, pprofMux),
-		).Fatal("ListenAndServe returned.")
-	}()
-
-	// listen for cache requests
-	cacheMux := http.NewServeMux()
-	cacheAddr := fmt.Sprintf("%s:%d", *host, *cachePort)
-	logrus.Infof("Cache Listening on: %s", cacheAddr)
-	logrus.WithField("mux", "cache").WithError(
-		http.ListenAndServe(cacheAddr, cacheMux),
+	logrus.Infof("pprof Listening on: %s", pprofAddr)
+	logrus.WithField("mux", "pprof").WithError(
+		http.ListenAndServe(pprofAddr, pprofMux),
 	).Fatal("ListenAndServe returned.")
 }
 

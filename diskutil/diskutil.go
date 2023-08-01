@@ -18,6 +18,7 @@ limitations under the License.
 package diskutil
 
 import (
+	"os"
 	"syscall"
 	"time"
 
@@ -47,4 +48,18 @@ func GetATime(path string, defaultTime time.Time) time.Time {
 		return defaultTime
 	}
 	return at
+}
+
+// file path helper
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return !os.IsNotExist(err)
+}
+
+// file path helper
+func ensureDir(dir string) error {
+	if exists(dir) {
+		return nil
+	}
+	return os.MkdirAll(dir, os.FileMode(0744))
 }

@@ -1,10 +1,10 @@
 package fsnotify
 
 import (
+	"github.com/hawkingrei/hoshino/fsnotify/internal/inotify"
 	"time"
 
 	"github.com/sirupsen/logrus"
-	"k8s.io/utils/inotify"
 )
 
 type notify struct {
@@ -16,7 +16,7 @@ func New(path string) *notify {
 	if err != nil {
 		logrus.Fatal(err)
 	}
-	watcher.AddWatch(path, inotify.InOpen)
+	watcher.AddWatch(path, inotify.InOpen|inotify.InCreate)
 	return &notify{
 		watcher: watcher,
 	}
@@ -32,8 +32,8 @@ func (n *notify) Start() {
 				return
 			}
 			logrus.Info("event:", event.Name)
-		case <-	ticker.C:
+		case <-ticker.C:
+		}
 	}
 	return
 }
-
