@@ -1,8 +1,9 @@
-package fsnotify
+package eviction
 
 import (
-	"github.com/hawkingrei/hoshino/fsnotify/internal/inotify"
 	"time"
+
+	"github.com/hawkingrei/hoshino/fsnotify/internal/inotify"
 
 	"github.com/sirupsen/logrus"
 )
