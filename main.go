@@ -37,6 +37,7 @@ import (
 	"time"
 
 	"github.com/hawkingrei/hoshino/diskutil"
+	"github.com/hawkingrei/hoshino/eviction"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 )
@@ -74,11 +75,8 @@ func main() {
 	if *dir == "" {
 		logrus.Fatal("--dir must be set!")
 	}
-
-	go monitorDiskAndEvict(
-		*dir, *diskCheckInterval,
-		*minPercentBlocksFree, *evictUntilPercentBlocksFree,
-	)
+	notify := eviction.New(*dir, *minPercentBlocksFree, *evictUntilPercentBlocksFree)
+	go notify.Start()
 
 	go updateMetrics(*metricsUpdateInterval, *dir)
 

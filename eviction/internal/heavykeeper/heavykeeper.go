@@ -7,7 +7,7 @@ import (
 	"math"
 	"math/rand"
 
-	"github.com/hawkingrei/hoshino/fsnotify/internal/minheap"
+	"github.com/hawkingrei/hoshino/eviction/internal/minheap"
 	"github.com/twmb/murmur3"
 )
 

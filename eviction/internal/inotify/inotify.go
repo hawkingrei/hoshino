@@ -11,6 +11,10 @@ type Event struct {
 	Name   string // File name (optional)
 }
 
+func (e *Event) HasEvent(h uint32) bool {
+	return e.Mask&h == h
+}
+
 type watch struct {
 	wd    uint32 // Watch descriptor (as returned by the inotify_add_watch() syscall)
 	flags uint32 // inotify flags of this watch (see inotify(7) for the list of valid flags)
