@@ -65,6 +65,7 @@ func (n *Notify) Start() {
 			} else {
 				n.heavykeeper.Add(event.Name, 1)
 			}
+			logrus.WithField("event", event).Info("Got event")
 		case <-ticker.C:
 			n.trickWorker()
 		case item := <-expelledChan:
