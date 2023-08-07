@@ -72,12 +72,15 @@ func (n *Notify) Start() {
 				return
 			}
 			if strings.HasSuffix(event.Name, "/") {
-				logrus.WithField("event", event).Info("skip Got event")
+				//logrus.WithField("event", event).Info("skip Got event")
 				continue
 			}
 			n.eventCnt.Add(1)
 			if event.Mask&inotify.InIsdir == inotify.InIsdir {
-				logrus.WithField("event", event).Info("Got dir event")
+				//logrus.WithField("event", event).Info("Got dir event")
+				if event.HasEvent(inotify.InCreate) {
+					n.watcher.AddWatch(event.Name, inotify.InOpen|inotify.InCreate|inotify.InIsdir)
+				}
 				continue
 			}
 			if event.HasEvent(inotify.InCreate) {
@@ -89,8 +92,6 @@ func (n *Notify) Start() {
 			cache, err := n.transfer.tran(event.Name)
 			if err != nil {
 				logrus.WithError(err).Error("transfer path")
-			} else {
-				logrus.WithField("event", event).WithField("cache dir", cache).Info("Got event")
 			}
 		case <-ticker.C:
 			n.trickWorker()
