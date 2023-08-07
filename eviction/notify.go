@@ -3,6 +3,7 @@ package eviction
 import (
 	"math"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync/atomic"
@@ -34,7 +35,16 @@ func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksF
 	if err != nil {
 		logrus.Fatal(err)
 	}
-	watcher.AddWatch(listenPath, inotify.InOpen|inotify.InCreate)
+	filepath.Walk(listenPath, func(path string, f os.FileInfo, err error) error {
+		if err != nil {
+			logrus.WithError(err).Error("error getting some entries")
+			return nil
+		}
+		if f.IsDir() {
+			watcher.AddWatch(path, inotify.InOpen|inotify.InCreate)
+		}
+		return nil
+	})
 	const HotKeyCnt = 2000000
 	factor := uint32(math.Log(float64(HotKeyCnt)))
 	if factor < 1 {
