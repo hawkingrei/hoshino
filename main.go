@@ -117,7 +117,6 @@ func updateMetrics(interval time.Duration, diskRoot string) {
 	logger := logrus.WithField("sync-loop", "updateMetrics")
 	ticker := time.NewTicker(interval)
 	for ; true; <-ticker.C {
-		logger.Info("tick")
 		_, bytesFree, bytesUsed, err := diskutil.GetDiskUsage(diskRoot)
 		if err != nil {
 			logger.WithError(err).Error("Failed to get disk metrics")
