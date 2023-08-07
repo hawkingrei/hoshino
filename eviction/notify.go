@@ -83,15 +83,15 @@ func (n *Notify) Start() {
 				}
 				continue
 			}
-			if event.HasEvent(inotify.InCreate) {
-				n.heavykeeper.Add(event.Name, 10)
-				n.write.Add(1)
-			} else {
-				n.heavykeeper.Add(event.Name, 1)
-			}
 			cache, err := n.transfer.tran(event.Name)
 			if err != nil {
 				logrus.WithError(err).Error("transfer path")
+			}
+			if event.HasEvent(inotify.InCreate) {
+				n.heavykeeper.Add(cache, 10)
+				n.write.Add(1)
+			} else {
+				n.heavykeeper.Add(cache, 1)
 			}
 		case <-ticker.C:
 			n.trickWorker()
