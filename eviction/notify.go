@@ -62,6 +62,7 @@ func (n *Notify) Start() {
 				return
 			}
 			if strings.HasSuffix(event.Name, "/") {
+				logrus.WithField("event", event).Info("skip Got event")
 				continue
 			}
 			n.eventCnt.Add(1)
