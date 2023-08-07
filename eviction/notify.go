@@ -78,6 +78,7 @@ func (n *Notify) Start() {
 			n.eventCnt.Add(1)
 			if event.Mask&inotify.InIsdir == inotify.InIsdir {
 				logrus.WithField("event", event).Info("Got dir event")
+				continue
 			}
 			if event.HasEvent(inotify.InCreate) {
 				n.heavykeeper.Add(event.Name, 10)
