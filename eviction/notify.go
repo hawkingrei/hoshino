@@ -96,6 +96,7 @@ func (n *Notify) Start() {
 		case <-ticker.C:
 			n.trickWorker()
 		case item := <-expelledChan:
+			logrus.WithField("path", item.Key).Error("delete")
 			os.Remove(item.Key)
 		}
 	}
@@ -147,7 +148,7 @@ func (n *Notify) topkCleaner() {
 				if err != nil {
 					logrus.WithError(err).Errorf("Error deleting entry at path: %v", entry.Path)
 				} else {
-					logrus.Info("delete %v", entry.Path)
+					logrus.WithField("path", entry.Path).Info("delete")
 				}
 			}
 		}
