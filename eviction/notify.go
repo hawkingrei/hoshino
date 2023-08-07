@@ -41,7 +41,7 @@ func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksF
 			return nil
 		}
 		if f.IsDir() {
-			watcher.AddWatch(path, inotify.InOpen|inotify.InCreate)
+			watcher.AddWatch(path, inotify.InOpen|inotify.InCreate|inotify.InIsdir)
 		}
 		return nil
 	})
@@ -76,6 +76,9 @@ func (n *Notify) Start() {
 				continue
 			}
 			n.eventCnt.Add(1)
+			if event.Mask&inotify.InIsdir == inotify.InIsdir {
+				logrus.WithField("event", event).Info("Got dir event")
+			}
 			if event.HasEvent(inotify.InCreate) {
 				n.heavykeeper.Add(event.Name, 10)
 				n.write.Add(1)
