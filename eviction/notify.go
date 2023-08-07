@@ -21,18 +21,19 @@ type Notify struct {
 	eventCnt    atomic.Int64
 	write       atomic.Int64
 	heavykeeper heavykeeper.Topk
+	transfer    *transfer
 
 	minPercentBlocksFree        float64
 	evictUntilPercentBlocksFree float64
 }
 
-func New(path string, minPercentBlocksFree, evictUntilPercentBlocksFree float64) *Notify {
+func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksFree float64) *Notify {
 	disk := diskutil.NewCache(path)
 	watcher, err := inotify.NewWatcher()
 	if err != nil {
 		logrus.Fatal(err)
 	}
-	watcher.AddWatch(path, inotify.InOpen|inotify.InCreate)
+	watcher.AddWatch(listenPath, inotify.InOpen|inotify.InCreate)
 	const HotKeyCnt = 2000000
 	factor := uint32(math.Log(float64(HotKeyCnt)))
 	if factor < 1 {
@@ -40,6 +41,7 @@ func New(path string, minPercentBlocksFree, evictUntilPercentBlocksFree float64)
 	}
 	heavykeeper := heavykeeper.NewHeavyKeeper(HotKeyCnt, 1024*factor, 4, 0.925, 1024)
 	return &Notify{
+		transfer:                    newTransfer(listenPath, path),
 		disk:                        disk,
 		watcher:                     watcher,
 		minPercentBlocksFree:        minPercentBlocksFree,
@@ -65,7 +67,12 @@ func (n *Notify) Start() {
 			} else {
 				n.heavykeeper.Add(event.Name, 1)
 			}
-			logrus.WithField("event", event).Info("Got event")
+			cache, err := n.transfer.tran(event.Name)
+			if err != nil {
+				logrus.WithError(err).Error("transfer path")
+			} else {
+				logrus.WithField("event", event).WithField("cache dir", cache).Info("Got event")
+			}
 		case <-ticker.C:
 			n.trickWorker()
 		case item := <-expelledChan:

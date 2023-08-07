@@ -42,6 +42,7 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+var ListenDir = flag.String("listen-dir", "", "location to store cache entries on disk")
 var dir = flag.String("dir", "", "location to store cache entries on disk")
 var host = flag.String("host", "", "host address to listen on")
 var cachePort = flag.Int("cache-port", 8080, "port to listen on for cache requests")
@@ -75,7 +76,10 @@ func main() {
 	if *dir == "" {
 		logrus.Fatal("--dir must be set!")
 	}
-	notify := eviction.New(*dir, *minPercentBlocksFree, *evictUntilPercentBlocksFree)
+	if *ListenDir == "" {
+		logrus.Fatal("--listen-dir must be set!")
+	}
+	notify := eviction.New(*dir, *ListenDir, *minPercentBlocksFree, *evictUntilPercentBlocksFree)
 	go notify.Start()
 
 	go updateMetrics(*metricsUpdateInterval, *dir)
