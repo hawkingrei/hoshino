@@ -4,6 +4,7 @@ import (
 	"math"
 	"os"
 	"sort"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -59,6 +60,9 @@ func (n *Notify) Start() {
 		case event, ok := <-n.watcher.Event:
 			if !ok {
 				return
+			}
+			if strings.HasSuffix(event.Name, "/") {
+				continue
 			}
 			n.eventCnt.Add(1)
 			if event.HasEvent(inotify.InCreate) {
