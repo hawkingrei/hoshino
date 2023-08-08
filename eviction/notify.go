@@ -125,7 +125,7 @@ func (n *Notify) topkCleaner() {
 
 	blocksFree, _, _, err := diskutil.GetDiskUsage(n.path)
 	if err != nil {
-		logrus.WithError(err).Error("Failed to get disk usage!")
+		logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
 		return
 	}
 	files := n.disk.GetEntries()
