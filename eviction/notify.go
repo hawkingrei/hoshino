@@ -110,8 +110,11 @@ func (n *Notify) Stop() {
 }
 
 func (n *Notify) trickWorker() {
-	if n.eventCnt.Load() > 10000 && n.write.Load() > 10000 {
+	if n.eventCnt.Load() > 10000 {
 		n.eventCnt.Store(0)
+		n.topkCleaner()
+	}
+	if n.write.Load() > 10000 {
 		n.write.Store(0)
 		n.topkCleaner()
 	}
