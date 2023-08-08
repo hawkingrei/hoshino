@@ -88,17 +88,17 @@ func (n *Notify) Start() {
 				logrus.WithError(err).Error("transfer path")
 			}
 			if event.HasEvent(inotify.InCreate) {
-				logrus.Info("create %s", event.Name)
+				logrus.Infof("create %s", event.Name)
 				n.heavykeeper.Add(cache, 10)
 				n.write.Add(1)
 			} else {
-				logrus.Info("open %s", event.Name)
+				logrus.Infof("open %s", event.Name)
 				n.heavykeeper.Add(cache, 1)
 			}
 		case <-ticker.C:
 			n.trickWorker()
 		case item := <-expelledChan:
-			logrus.WithField("path", item.Key).Error("delete")
+			logrus.Infof("delete %s", item.Key)
 			os.Remove(item.Key)
 		}
 	}
