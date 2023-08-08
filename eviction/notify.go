@@ -52,6 +52,7 @@ func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksF
 	}
 	heavykeeper := heavykeeper.NewHeavyKeeper(HotKeyCnt, 1024*factor, 4, 0.925, 1024)
 	return &Notify{
+		path:                        path,
 		transfer:                    newTransfer(listenPath, path),
 		disk:                        disk,
 		watcher:                     watcher,
