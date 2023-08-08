@@ -134,6 +134,9 @@ func (n *Notify) topkCleaner() {
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].LastAccess.Before(files[j].LastAccess)
 	})
+	if blocksFree > 50 {
+		return
+	}
 	for _, entry := range files {
 		_, ok := topset[entry.Path]
 		if !ok {
@@ -141,7 +144,7 @@ func (n *Notify) topkCleaner() {
 			if err != nil {
 				logrus.WithError(err).Errorf("Error deleting entry at path: %v", entry.Path)
 			} else {
-				logrus.Info("delete %s", entry.Path)
+				logrus.Infof("delete %s", entry.Path)
 			}
 		}
 		newBlockFree, _, _, err := diskutil.GetDiskUsage(n.path)
