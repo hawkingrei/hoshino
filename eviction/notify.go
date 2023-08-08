@@ -45,7 +45,7 @@ func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksF
 		}
 		return nil
 	})
-	const HotKeyCnt = 2000000
+	const HotKeyCnt = 20000000
 	factor := uint32(math.Log(float64(HotKeyCnt)))
 	if factor < 1 {
 		factor = 1
@@ -99,7 +99,7 @@ func (n *Notify) Start() {
 		case <-ticker.C:
 			n.trickWorker()
 		case item := <-expelledChan:
-			logrus.Infof("delete %s", item.Key)
+			logrus.Infof("delete %s from expelledChan", item.Key)
 			os.Remove(item.Key)
 		}
 	}
@@ -111,7 +111,7 @@ func (n *Notify) Stop() {
 }
 
 func (n *Notify) trickWorker() {
-	if n.eventCnt.Load() > 5000 || n.write.Load() > 2000 {
+	if n.eventCnt.Load() > 10000 && n.write.Load() > 10000 {
 		n.eventCnt.Store(0)
 		n.write.Store(0)
 		n.topkCleaner()
@@ -136,16 +136,16 @@ func (n *Notify) topkCleaner() {
 		return files[i].LastAccess.Before(files[j].LastAccess)
 	})
 	for _, entry := range files {
-		count, ok := topset[entry.Path]
-		if !ok {
-			err = n.disk.Delete(n.disk.PathToKey(entry.Path))
-			if err != nil {
-				logrus.WithError(err).Errorf("Error deleting entry at path: %v", entry.Path)
-			} else {
-				logrus.Info("delete %v", entry.Path)
-			}
-		}
 		if blocksFree < n.minPercentBlocksFree {
+			count, ok := topset[entry.Path]
+			if !ok {
+				err = n.disk.Delete(n.disk.PathToKey(entry.Path))
+				if err != nil {
+					logrus.WithError(err).Errorf("Error deleting entry at path: %v", entry.Path)
+				} else {
+					logrus.Info("delete %s", entry.Path)
+				}
+			}
 			if count < 2 {
 				err = n.disk.Delete(n.disk.PathToKey(entry.Path))
 				if err != nil {
