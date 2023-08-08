@@ -78,7 +78,6 @@ func (n *Notify) Start() {
 			}
 			n.eventCnt.Add(1)
 			if event.Mask&inotify.InIsdir == inotify.InIsdir {
-				//logrus.WithField("event", event).Info("Got dir event")
 				if event.HasEvent(inotify.InCreate) {
 					n.watcher.AddWatch(event.Name, inotify.InOpen|inotify.InCreate|inotify.InIsdir)
 				}
@@ -136,29 +135,22 @@ func (n *Notify) topkCleaner() {
 		return files[i].LastAccess.Before(files[j].LastAccess)
 	})
 	for _, entry := range files {
-		if blocksFree < n.minPercentBlocksFree {
-			count, ok := topset[entry.Path]
-			if !ok {
-				err = n.disk.Delete(n.disk.PathToKey(entry.Path))
-				if err != nil {
-					logrus.WithError(err).Errorf("Error deleting entry at path: %v", entry.Path)
-				} else {
-					logrus.Info("delete %s", entry.Path)
-				}
-			}
-			if count < 2 {
-				err = n.disk.Delete(n.disk.PathToKey(entry.Path))
-				if err != nil {
-					logrus.WithError(err).Errorf("Error deleting entry at path: %v", entry.Path)
-				} else {
-					logrus.WithField("path", entry.Path).Info("delete")
-				}
+		_, ok := topset[entry.Path]
+		if !ok {
+			err = n.disk.Delete(n.disk.PathToKey(entry.Path))
+			if err != nil {
+				logrus.WithError(err).Errorf("Error deleting entry at path: %v", entry.Path)
+			} else {
+				logrus.Info("delete %s", entry.Path)
 			}
 		}
-		blocksFree, _, _, err = diskutil.GetDiskUsage(n.path)
+		newBlockFree, _, _, err := diskutil.GetDiskUsage(n.path)
 		if err != nil {
 			logrus.WithError(err).Error("Failed to get disk usage!")
 			continue
+		}
+		if blocksFree-newBlockFree >= 1 {
+			break
 		}
 	}
 }
