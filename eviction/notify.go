@@ -73,7 +73,6 @@ func (n *Notify) Start() {
 				return
 			}
 			if strings.HasSuffix(event.Name, "/") {
-				//logrus.WithField("event", event).Info("skip Got event")
 				continue
 			}
 			n.eventCnt.Add(1)
@@ -88,11 +87,9 @@ func (n *Notify) Start() {
 				logrus.WithError(err).Error("transfer path")
 			}
 			if event.HasEvent(inotify.InCreate) {
-				logrus.Infof("create %s", event.Name)
 				n.heavykeeper.Add(cache, 10)
 				n.write.Add(1)
 			} else {
-				logrus.Infof("open %s", event.Name)
 				n.heavykeeper.Add(cache, 1)
 			}
 		case <-ticker.C:
@@ -133,13 +130,14 @@ func (n *Notify) topkCleaner() {
 		logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
 		return
 	}
+	if blocksFree > 30 {
+		logrus.WithField("blocksFree", blocksFree).Info("blocksFree > 70, skip topkCleaner")
+		return
+	}
 	files := n.disk.GetEntries()
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].LastAccess.Before(files[j].LastAccess)
 	})
-	if blocksFree > 50 {
-		return
-	}
 	for _, entry := range files {
 		_, ok := topset[entry.Path]
 		if !ok {
@@ -153,7 +151,7 @@ func (n *Notify) topkCleaner() {
 		newBlockFree, _, _, err := diskutil.GetDiskUsage(n.path)
 		if err != nil {
 			logrus.WithError(err).Error("Failed to get disk usage!")
-			continue
+			break
 		}
 		if blocksFree-newBlockFree >= 1 {
 			break
