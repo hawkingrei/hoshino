@@ -20,7 +20,6 @@ type Notify struct {
 	path        string
 	disk        *diskutil.Cache
 	watcher     *inotify.Watcher
-	eventCnt    atomic.Int64
 	write       atomic.Int64
 	heavykeeper heavykeeper.Topk
 	transfer    *transfer
@@ -63,7 +62,6 @@ func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksF
 }
 
 func (n *Notify) Start() {
-	expelledChan := n.heavykeeper.Expelled()
 	ticker := time.NewTicker(15 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -75,7 +73,6 @@ func (n *Notify) Start() {
 			if strings.HasSuffix(event.Name, "/") {
 				continue
 			}
-			n.eventCnt.Add(1)
 			if event.Mask&inotify.InIsdir == inotify.InIsdir {
 				if event.HasEvent(inotify.InCreate) {
 					n.watcher.AddWatch(event.Name, inotify.InOpen|inotify.InCreate|inotify.InIsdir)
@@ -94,6 +91,15 @@ func (n *Notify) Start() {
 			}
 		case <-ticker.C:
 			n.trickWorker()
+		}
+	}
+	return
+}
+
+func (n *Notify) Background() {
+	expelledChan := n.heavykeeper.Expelled()
+	for {
+		select {
 		case item := <-expelledChan:
 			logrus.Infof("delete %s from expelledChan", item.Key)
 			os.Remove(item.Key)
@@ -107,11 +113,7 @@ func (n *Notify) Stop() {
 }
 
 func (n *Notify) trickWorker() {
-	if n.eventCnt.Load() > 10000 {
-		n.eventCnt.Store(0)
-		n.topkCleaner()
-	}
-	if n.write.Load() > 10000 {
+	if n.write.Load() > 20000 {
 		n.write.Store(0)
 		n.topkCleaner()
 	}

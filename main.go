@@ -81,6 +81,7 @@ func main() {
 	}
 	notify := eviction.New(*dir, *ListenDir, *minPercentBlocksFree, *evictUntilPercentBlocksFree)
 	go notify.Start()
+	go notify.Background()
 
 	go updateMetrics(*metricsUpdateInterval, *dir)
 
