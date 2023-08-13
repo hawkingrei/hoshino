@@ -150,13 +150,5 @@ func (n *Notify) topkCleaner() {
 				logrus.Infof("delete %s", entry.Path)
 			}
 		}
-		newBlockFree, _, _, err := diskutil.GetDiskUsage(n.path)
-		if err != nil {
-			logrus.WithError(err).Error("Failed to get disk usage!")
-			break
-		}
-		if blocksFree-newBlockFree >= 1 {
-			break
-		}
 	}
 }
