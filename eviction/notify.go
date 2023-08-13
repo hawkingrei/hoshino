@@ -132,6 +132,7 @@ func (n *Notify) topkCleaner() {
 		logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
 		return
 	}
+	logrus.Infof("topk %d", len(top))
 	if blocksFree > 30 {
 		logrus.WithField("blocksFree", blocksFree).Info("blocksFree > 70, skip topkCleaner")
 		return
