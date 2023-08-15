@@ -28,7 +28,7 @@ func (t *transfer) tran(listenDir string) (string, error) {
 	pathList := strings.Split(base, "/")
 	idx := 0
 	for n := 0; n < len(pathList); n++ {
-		if pathList[n] == "ac" || pathList[n] == "cas" || pathList[n] == "content_addressable" || n == t.startidx {
+		if pathList[n] == "ac" || pathList[n] == "cas" || pathList[n] == "content_addressable" || n == t.startidx+1 {
 			idx = n
 			break
 		}
