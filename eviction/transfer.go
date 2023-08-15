@@ -35,5 +35,4 @@ func (t *transfer) tran(listenDir string) (string, error) {
 	}
 	pathList = pathList[idx:]
 	return filepath.Join(t.cacheDir, filepath.Join(pathList...)), nil
-
 }
