@@ -44,7 +44,7 @@ func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksF
 		}
 		return nil
 	})
-	const HotKeyCnt = 100_000
+	const HotKeyCnt = 150_000
 	factor := uint32(math.Log(float64(HotKeyCnt)))
 	if factor < 1 {
 		factor = 1
@@ -113,7 +113,7 @@ func (n *Notify) Stop() {
 }
 
 func (n *Notify) trickWorker() {
-	if n.write.Load() > 10000 {
+	if n.write.Load() > 15000 {
 		n.write.Store(0)
 		n.topkCleaner()
 	}
