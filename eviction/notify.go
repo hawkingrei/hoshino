@@ -100,12 +100,13 @@ func (n *Notify) Background() {
 	expelledChan := n.heavykeeper.Expelled()
 	now := time.Now()
 	blocksFree := 0.0
+	var err error
 	for {
 		select {
 		case item := <-expelledChan:
 			if time.Since(now) > 5*time.Minute {
 				now = time.Now()
-				blocksFree, _, _, err := diskutil.GetDiskUsage(n.path)
+				blocksFree, _, _, err = diskutil.GetDiskUsage(n.path)
 				if err != nil {
 					logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
 				}
