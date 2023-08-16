@@ -44,7 +44,7 @@ func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksF
 		}
 		return nil
 	})
-	const HotKeyCnt = 300_000
+	const HotKeyCnt = 1000_000
 	factor := uint32(math.Log(float64(HotKeyCnt)))
 	if factor < 1 {
 		factor = 1
@@ -98,9 +98,21 @@ func (n *Notify) Start() {
 
 func (n *Notify) Background() {
 	expelledChan := n.heavykeeper.Expelled()
+	now := time.Now()
+	blocksFree := 0.0
 	for {
 		select {
 		case item := <-expelledChan:
+			if time.Since(now) > 5*time.Minute {
+				now = time.Now()
+				blocksFree, _, _, err := diskutil.GetDiskUsage(n.path)
+				if err != nil {
+					logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
+				}
+			}
+			if blocksFree > 50 {
+				continue
+			}
 			logrus.Infof("delete %s from expelledChan", item.Key)
 			os.Remove(item.Key)
 		}
@@ -120,7 +132,7 @@ func (n *Notify) trickWorker() {
 	}
 	var value int64 = 0
 	if blocksFree > 50 {
-		value = 30000
+		value = 35000
 	} else {
 		value = 15000
 	}
