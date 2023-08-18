@@ -132,7 +132,7 @@ func (n *Notify) trickWorker() {
 		return
 	}
 	var value int64 = 0
-	if blocksFree > 50 {
+	if blocksFree > 70 {
 		value = 35000
 	} else {
 		value = 15000
