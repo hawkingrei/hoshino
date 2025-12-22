@@ -44,7 +44,7 @@ func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksF
 		}
 		return nil
 	})
-	const HotKeyCnt = 1000_000
+	const HotKeyCnt = 10_000_000
 	factor := uint32(math.Log(float64(HotKeyCnt)))
 	if factor < 1 {
 		factor = 1
@@ -133,9 +133,9 @@ func (n *Notify) trickWorker() {
 	}
 	var value int64 = 0
 	if blocksFree > 70 {
-		value = 35000
+		value = 500_000
 	} else {
-		value = 15000
+		value = 400_000
 	}
 	if n.write.Load() > value {
 		n.write.Store(0)
