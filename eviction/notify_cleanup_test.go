@@ -17,10 +17,13 @@ func TestTopkCleanerStopsAtEvictionTarget(t *testing.T) {
 	protected := paths[0]
 	diskChecks := 0
 	notify := &Notify{
-		path:                        cacheDir,
-		disk:                        diskutil.NewCache(cacheDir),
-		heavykeeper:                 &cleanupTopk{items: []heavykeeper.Item{{Key: protected, Count: 1}}},
-		evictUntilPercentBlocksFree: 20,
+		path:        cacheDir,
+		disk:        diskutil.NewCache(cacheDir),
+		heavykeeper: &cleanupTopk{items: []heavykeeper.Item{{Key: protected, Count: 1}}},
+		policy: EvictionPolicy{
+			MinPercentBlocksFree:        5,
+			EvictUntilPercentBlocksFree: 20,
+		},
 		getCleanupDiskUsage: func(string) (float64, uint64, uint64, error) {
 			diskChecks++
 			switch diskChecks {
@@ -33,6 +36,7 @@ func TestTopkCleanerStopsAtEvictionTarget(t *testing.T) {
 			}
 		},
 	}
+	notify.evicting.Store(true)
 
 	notify.topkCleaner()
 
@@ -56,10 +60,13 @@ func TestTopkCleanerStopsWhenDiskUsageRefreshFails(t *testing.T) {
 	createCacheFiles(t, cacheDir, 150)
 	diskChecks := 0
 	notify := &Notify{
-		path:                        cacheDir,
-		disk:                        diskutil.NewCache(cacheDir),
-		heavykeeper:                 &cleanupTopk{},
-		evictUntilPercentBlocksFree: 20,
+		path:        cacheDir,
+		disk:        diskutil.NewCache(cacheDir),
+		heavykeeper: &cleanupTopk{},
+		policy: EvictionPolicy{
+			MinPercentBlocksFree:        5,
+			EvictUntilPercentBlocksFree: 20,
+		},
 		getCleanupDiskUsage: func(string) (float64, uint64, uint64, error) {
 			diskChecks++
 			if diskChecks == 1 {
@@ -68,6 +75,7 @@ func TestTopkCleanerStopsWhenDiskUsageRefreshFails(t *testing.T) {
 			return 0, 0, 0, errors.New("disk usage unavailable")
 		},
 	}
+	notify.evicting.Store(true)
 
 	notify.topkCleaner()
 
