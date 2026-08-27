@@ -22,9 +22,41 @@ func TestEnqueueAccessInvalidatesFullQueue(t *testing.T) {
 	}
 }
 
+func TestEventStateGenerationRejectsInFlightItemsAfterRecovery(t *testing.T) {
+	notify := &Notify{}
+	staleGeneration := notify.eventStateGeneration.Load()
+
+	notify.markEventStateInvalid("test overflow", false)
+	notify.eventStateInvalid.Store(false)
+
+	if notify.eventStateIsCurrent(staleGeneration) {
+		t.Fatal("stale event generation remained current after recovery")
+	}
+	if !notify.eventStateIsCurrent(notify.eventStateGeneration.Load()) {
+		t.Fatal("recovered event generation should be current")
+	}
+}
+
+func TestTopkCleanerSkipsInvalidEventState(t *testing.T) {
+	notify := &Notify{
+		getCleanupDiskUsage: func(string) (float64, uint64, uint64, error) {
+			t.Fatal("disk usage should not be checked for invalid event state")
+			return 0, 0, 0, nil
+		},
+	}
+	notify.eventStateInvalid.Store(true)
+
+	notify.topkCleaner()
+}
+
 func TestRunWorkerResetsAndRebuildsAfterOverflow(t *testing.T) {
 	topk := newRecoveringTopk()
-	notify := &Notify{heavykeeper: topk}
+	notify := &Notify{
+		heavykeeper: topk,
+		policy: EvictionPolicy{
+			DiskCheckInterval: time.Hour,
+		},
+	}
 	accesses := make(chan accessEvent, 2)
 	accesses <- accessEvent{key: "stale", increment: 1}
 	notify.eventStateInvalid.Store(true)
