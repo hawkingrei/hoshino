@@ -15,4 +15,6 @@ type Topk interface {
 	// Expelled watch at the expelled items.
 	Expelled() <-chan Item
 	Fading()
+	// Reset discards all observations while preserving the expelled channel.
+	Reset()
 }

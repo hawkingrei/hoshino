@@ -38,6 +38,8 @@ import (
 	"unsafe"
 )
 
+const watcherEventBufferSize = 4096
+
 // NewWatcher creates and returns a new inotify instance using inotify_init(2)
 func NewWatcher() (*Watcher, error) {
 	fd, errno := syscall.InotifyInit1(syscall.IN_CLOEXEC)
@@ -48,8 +50,8 @@ func NewWatcher() (*Watcher, error) {
 		fd:      fd,
 		watches: make(map[string]*watch),
 		paths:   make(map[int]string),
-		Event:   make(chan *Event),
-		Error:   make(chan error),
+		Event:   make(chan *Event, watcherEventBufferSize),
+		Error:   make(chan error, 1),
 		done:    make(chan bool, 1),
 	}
 
@@ -180,6 +182,10 @@ func (w *Watcher) readEvents() {
 			event.Mask = uint32(raw.Mask)
 			event.Cookie = uint32(raw.Cookie)
 			nameLen := uint32(raw.Len)
+			if w.reportOverflow(event.Mask) {
+				offset += syscall.SizeofInotifyEvent + nameLen
+				continue
+			}
 			// If the event happened to the watched directory or the watched file, the kernel
 			// doesn't append the filename to the event, but we would like to always fill the
 			// the "Name" field with a valid filename. We retrieve the path of the watch from
@@ -202,6 +208,14 @@ func (w *Watcher) readEvents() {
 			offset += syscall.SizeofInotifyEvent + nameLen
 		}
 	}
+}
+
+func (w *Watcher) reportOverflow(mask uint32) bool {
+	if mask&InQOverflow == 0 {
+		return false
+	}
+	w.Error <- ErrEventOverflow
+	return true
 }
 
 // String formats the event e in the form

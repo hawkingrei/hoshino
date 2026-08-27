@@ -44,3 +44,25 @@ func BenchmarkAdd(b *testing.B) {
 		topk.Add(data[i%1000], 1)
 	}
 }
+
+func TestReset(t *testing.T) {
+	topk := NewHeavyKeeper(2, 32, 2, 0.9, 1).(*HeavyKeeper)
+	topk.Add("first", 10)
+	topk.Add("second", 5)
+	if len(topk.List()) == 0 {
+		t.Fatal("top-k should contain entries before reset")
+	}
+
+	topk.Reset()
+
+	if got := topk.List(); len(got) != 0 {
+		t.Fatalf("List() after reset = %v, want empty", got)
+	}
+	if got := topk.Total(); got != 0 {
+		t.Fatalf("Total() after reset = %d, want 0", got)
+	}
+	topk.Add("rebuilt", 1)
+	if got := topk.List(); len(got) != 1 || got[0].Key != "rebuilt" {
+		t.Fatalf("List() after rebuild = %v, want rebuilt entry", got)
+	}
+}
