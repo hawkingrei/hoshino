@@ -20,12 +20,10 @@ type Notify struct {
 	path        string
 	disk        *diskutil.Cache
 	watcher     *inotify.Watcher
-	write       atomic.Int64
 	heavykeeper heavykeeper.Topk
 	transfer    *transfer
-
-	minPercentBlocksFree        float64
-	evictUntilPercentBlocksFree float64
+	policy      EvictionPolicy
+	evicting    atomic.Bool
 }
 
 const diskUsageRefreshInterval = 5 * time.Minute
@@ -54,11 +52,14 @@ func (s *diskUsageSnapshot) refresh(now time.Time, path string, getDiskUsage dis
 	return nil
 }
 
-func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksFree float64) *Notify {
+func New(path, listenPath string, policy EvictionPolicy) (*Notify, error) {
+	if err := policy.Validate(); err != nil {
+		return nil, err
+	}
 	disk := diskutil.NewCache(path)
 	watcher, err := inotify.NewWatcher()
 	if err != nil {
-		logrus.Fatal(err)
+		return nil, err
 	}
 	filepath.Walk(listenPath, func(path string, f os.FileInfo, err error) error {
 		if err != nil {
@@ -77,18 +78,17 @@ func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksF
 	}
 	heavykeeper := heavykeeper.NewHeavyKeeper(HotKeyCnt, 1024*factor, 4, 0.9, 1)
 	return &Notify{
-		path:                        path,
-		transfer:                    newTransfer(listenPath, path),
-		disk:                        disk,
-		watcher:                     watcher,
-		minPercentBlocksFree:        minPercentBlocksFree,
-		evictUntilPercentBlocksFree: evictUntilPercentBlocksFree,
-		heavykeeper:                 heavykeeper,
-	}
+		path:        path,
+		transfer:    newTransfer(listenPath, path),
+		disk:        disk,
+		watcher:     watcher,
+		policy:      policy,
+		heavykeeper: heavykeeper,
+	}, nil
 }
 
 func (n *Notify) Start() {
-	ticker := time.NewTicker(15 * time.Minute)
+	ticker := time.NewTicker(n.policy.DiskCheckInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -111,7 +111,6 @@ func (n *Notify) Start() {
 			}
 			if event.HasEvent(inotify.InCreate) {
 				n.heavykeeper.Add(cache, 10)
-				n.write.Add(1)
 			} else {
 				n.heavykeeper.Add(cache, 1)
 			}
@@ -132,7 +131,7 @@ func (n *Notify) Background() {
 				logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
 				continue
 			}
-			if usage.blocksFree > 50 {
+			if !n.updateEvictionState(usage.blocksFree) {
 				continue
 			}
 			logrus.Infof("delete %s from expelledChan", item.Key)
@@ -152,14 +151,7 @@ func (n *Notify) trickWorker() {
 		logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
 		return
 	}
-	var value int64 = 0
-	if blocksFree > 70 {
-		value = 35000
-	} else {
-		value = 15000
-	}
-	if n.write.Load() > value {
-		n.write.Store(0)
+	if n.updateEvictionState(blocksFree) {
 		n.topkCleaner()
 	}
 }
@@ -178,8 +170,8 @@ func (n *Notify) topkCleaner() {
 		return
 	}
 	logrus.Infof("topk %d", len(top))
-	if blocksFree > 30 {
-		logrus.WithField("blocksFree", blocksFree).Info("blocksFree > 70, skip topkCleaner")
+	if !n.updateEvictionState(blocksFree) {
+		logrus.WithField("blocksFree", blocksFree).Info("disk usage is above the eviction threshold, skip topkCleaner")
 		return
 	}
 	files := n.disk.GetEntries()
@@ -195,6 +187,16 @@ func (n *Notify) topkCleaner() {
 			} else {
 				logrus.Infof("delete %s", entry.Path)
 			}
+		}
+	}
+}
+
+func (n *Notify) updateEvictionState(percentBlocksFree float64) bool {
+	for {
+		current := n.evicting.Load()
+		next := n.policy.nextEvicting(current, percentBlocksFree)
+		if current == next || n.evicting.CompareAndSwap(current, next) {
+			return next
 		}
 	}
 }

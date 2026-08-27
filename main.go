@@ -80,7 +80,15 @@ func main() {
 	if *ListenDir == "" {
 		logrus.Fatal("--listen-dir must be set!")
 	}
-	notify := eviction.New(*dir, *ListenDir, *minPercentBlocksFree, *evictUntilPercentBlocksFree)
+	policy := eviction.EvictionPolicy{
+		DiskCheckInterval:           *diskCheckInterval,
+		MinPercentBlocksFree:        *minPercentBlocksFree,
+		EvictUntilPercentBlocksFree: *evictUntilPercentBlocksFree,
+	}
+	notify, err := eviction.New(*dir, *ListenDir, policy)
+	if err != nil {
+		logrus.WithError(err).Fatal("Failed to initialize eviction")
+	}
 	go notify.Start()
 	go notify.Background()
 
