@@ -28,6 +28,32 @@ type Notify struct {
 	evictUntilPercentBlocksFree float64
 }
 
+const diskUsageRefreshInterval = 5 * time.Minute
+
+type diskUsageGetter func(path string) (percentBlocksFree float64, bytesFree, bytesUsed uint64, err error)
+
+type diskUsageSnapshot struct {
+	blocksFree float64
+	checkedAt  time.Time
+}
+
+func (s *diskUsageSnapshot) refresh(now time.Time, path string, getDiskUsage diskUsageGetter) error {
+	if !s.checkedAt.IsZero() {
+		age := now.Sub(s.checkedAt)
+		if age >= 0 && age < diskUsageRefreshInterval {
+			return nil
+		}
+	}
+
+	blocksFree, _, _, err := getDiskUsage(path)
+	if err != nil {
+		return err
+	}
+	s.blocksFree = blocksFree
+	s.checkedAt = now
+	return nil
+}
+
 func New(path, listenPath string, minPercentBlocksFree, evictUntilPercentBlocksFree float64) *Notify {
 	disk := diskutil.NewCache(path)
 	watcher, err := inotify.NewWatcher()
@@ -98,20 +124,15 @@ func (n *Notify) Start() {
 
 func (n *Notify) Background() {
 	expelledChan := n.heavykeeper.Expelled()
-	now := time.Now()
-	blocksFree := 0.0
-	var err error
+	usage := diskUsageSnapshot{}
 	for {
 		select {
 		case item := <-expelledChan:
-			if time.Since(now) > 5*time.Minute {
-				now = time.Now()
-				blocksFree, _, _, err = diskutil.GetDiskUsage(n.path)
-				if err != nil {
-					logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
-				}
+			if err := usage.refresh(time.Now(), n.path, diskutil.GetDiskUsage); err != nil {
+				logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
+				continue
 			}
-			if blocksFree > 50 {
+			if usage.blocksFree > 50 {
 				continue
 			}
 			logrus.Infof("delete %s from expelledChan", item.Key)
