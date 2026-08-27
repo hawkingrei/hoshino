@@ -17,15 +17,17 @@ import (
 )
 
 type Notify struct {
-	path        string
-	disk        *diskutil.Cache
-	watcher     *inotify.Watcher
-	heavykeeper heavykeeper.Topk
-	transfer    *transfer
-	policy      EvictionPolicy
-	evicting    atomic.Bool
+	path                string
+	disk                *diskutil.Cache
+	watcher             *inotify.Watcher
+	heavykeeper         heavykeeper.Topk
+	transfer            *transfer
+	getCleanupDiskUsage diskUsageGetter
+	policy              EvictionPolicy
+	evicting            atomic.Bool
 }
 
+const cleanupBatchSize = 100
 const diskUsageRefreshInterval = 5 * time.Minute
 
 type diskUsageGetter func(path string) (percentBlocksFree float64, bytesFree, bytesUsed uint64, err error)
@@ -78,12 +80,13 @@ func New(path, listenPath string, policy EvictionPolicy) (*Notify, error) {
 	}
 	heavykeeper := heavykeeper.NewHeavyKeeper(HotKeyCnt, 1024*factor, 4, 0.9, 1)
 	return &Notify{
-		path:        path,
-		transfer:    newTransfer(listenPath, path),
-		disk:        disk,
-		watcher:     watcher,
-		policy:      policy,
-		heavykeeper: heavykeeper,
+		path:                path,
+		transfer:            newTransfer(listenPath, path),
+		disk:                disk,
+		watcher:             watcher,
+		getCleanupDiskUsage: diskutil.GetDiskUsage,
+		policy:              policy,
+		heavykeeper:         heavykeeper,
 	}, nil
 }
 
@@ -157,36 +160,52 @@ func (n *Notify) trickWorker() {
 }
 
 func (n *Notify) topkCleaner() {
+	blocksFree, _, _, err := n.getCleanupDiskUsage(n.path)
+	if err != nil {
+		logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
+		return
+	}
+	if !n.updateEvictionState(blocksFree) {
+		logrus.WithField("blocksFree", blocksFree).Info("disk usage is above the eviction threshold, skip topkCleaner")
+		return
+	}
+
 	n.heavykeeper.Fading()
 	top := n.heavykeeper.List()
 	topset := make(map[string]uint32)
 	for _, item := range top {
 		topset[item.Key] = item.Count
 	}
-
-	blocksFree, _, _, err := diskutil.GetDiskUsage(n.path)
-	if err != nil {
-		logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
-		return
-	}
 	logrus.Infof("topk %d", len(top))
-	if !n.updateEvictionState(blocksFree) {
-		logrus.WithField("blocksFree", blocksFree).Info("disk usage is above the eviction threshold, skip topkCleaner")
-		return
-	}
 	files := n.disk.GetEntries()
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].LastAccess.Before(files[j].LastAccess)
 	})
+	deletedSinceCheck := 0
 	for _, entry := range files {
 		_, ok := topset[entry.Path]
-		if !ok {
-			err = n.disk.Delete(n.disk.PathToKey(entry.Path))
-			if err != nil {
-				logrus.WithError(err).Errorf("Error deleting entry at path: %v", entry.Path)
-			} else {
-				logrus.Infof("delete %s", entry.Path)
-			}
+		if ok {
+			continue
+		}
+		if err = n.disk.Delete(n.disk.PathToKey(entry.Path)); err != nil {
+			logrus.WithError(err).Errorf("Error deleting entry at path: %v", entry.Path)
+			continue
+		}
+		logrus.Infof("delete %s", entry.Path)
+		deletedSinceCheck++
+		if deletedSinceCheck < cleanupBatchSize {
+			continue
+		}
+
+		deletedSinceCheck = 0
+		blocksFree, _, _, err = n.getCleanupDiskUsage(n.path)
+		if err != nil {
+			logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage during cleanup!")
+			return
+		}
+		if !n.updateEvictionState(blocksFree) {
+			logrus.WithField("blocksFree", blocksFree).Info("eviction target reached")
+			return
 		}
 	}
 }
