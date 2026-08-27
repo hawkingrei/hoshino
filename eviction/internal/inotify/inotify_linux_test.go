@@ -8,6 +8,7 @@
 package inotify
 
 import (
+	"errors"
 	"io/ioutil"
 	"os"
 	"sync/atomic"
@@ -104,5 +105,18 @@ func TestInotifyClose(t *testing.T) {
 	err := watcher.Watch(os.TempDir())
 	if err == nil {
 		t.Fatal("expected error on Watch() after Close(), got nil")
+	}
+}
+
+func TestReportOverflow(t *testing.T) {
+	watcher := &Watcher{Error: make(chan error, 1)}
+	if watcher.reportOverflow(InCreate) {
+		t.Fatal("non-overflow event reported as overflow")
+	}
+	if !watcher.reportOverflow(InQOverflow) {
+		t.Fatal("overflow event was not reported")
+	}
+	if err := <-watcher.Error; !errors.Is(err, ErrEventOverflow) {
+		t.Fatalf("reported error = %v, want %v", err, ErrEventOverflow)
 	}
 }

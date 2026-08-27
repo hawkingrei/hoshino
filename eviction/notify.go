@@ -1,11 +1,13 @@
 package eviction
 
 import (
+	"errors"
 	"math"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -17,14 +19,25 @@ import (
 )
 
 type Notify struct {
-	path                string
-	disk                *diskutil.Cache
-	watcher             *inotify.Watcher
-	heavykeeper         heavykeeper.Topk
-	transfer            *transfer
-	getCleanupDiskUsage diskUsageGetter
-	policy              EvictionPolicy
-	evicting            atomic.Bool
+	path                     string
+	disk                     *diskutil.Cache
+	watcher                  *inotify.Watcher
+	heavykeeper              heavykeeper.Topk
+	transfer                 *transfer
+	getCleanupDiskUsage      diskUsageGetter
+	policy                   EvictionPolicy
+	evicting                 atomic.Bool
+	eventStateInvalid        atomic.Bool
+	eventStateGeneration     atomic.Uint64
+	eventRecoveryMu          sync.Mutex
+	eventWatchRescanRequired bool
+}
+
+const accessEventBufferSize = 4096
+
+type accessEvent struct {
+	key       string
+	increment uint32
 }
 
 const cleanupBatchSize = 100
@@ -63,16 +76,7 @@ func New(path, listenPath string, policy EvictionPolicy) (*Notify, error) {
 	if err != nil {
 		return nil, err
 	}
-	filepath.Walk(listenPath, func(path string, f os.FileInfo, err error) error {
-		if err != nil {
-			logrus.WithError(err).Error("error getting some entries")
-			return nil
-		}
-		if f.IsDir() {
-			watcher.AddWatch(path, inotify.InOpen|inotify.InCreate|inotify.InIsdir)
-		}
-		return nil
-	})
+	addDirectoryWatches(watcher, listenPath)
 	const HotKeyCnt = 1000_000
 	factor := uint32(math.Log(float64(HotKeyCnt)))
 	if factor < 1 {
@@ -90,14 +94,42 @@ func New(path, listenPath string, policy EvictionPolicy) (*Notify, error) {
 	}, nil
 }
 
+func addDirectoryWatches(watcher *inotify.Watcher, root string) {
+	_ = filepath.Walk(root, func(path string, f os.FileInfo, err error) error {
+		if err != nil {
+			logrus.WithError(err).Error("error getting some entries")
+			return nil
+		}
+		if f.IsDir() {
+			if err := watcher.AddWatch(path, inotify.InOpen|inotify.InCreate|inotify.InIsdir); err != nil {
+				logrus.WithError(err).WithField("path", path).Error("failed to add inotify watch")
+			}
+		}
+		return nil
+	})
+}
+
 func (n *Notify) Start() {
-	ticker := time.NewTicker(n.policy.DiskCheckInterval)
-	defer ticker.Stop()
+	accesses := make(chan accessEvent, accessEventBufferSize)
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+		n.runWorker(accesses)
+	}()
+	defer func() {
+		close(accesses)
+		<-workerDone
+	}()
+
+	watcherErrors := n.watcher.Error
 	for {
 		select {
 		case event, ok := <-n.watcher.Event:
 			if !ok {
 				return
+			}
+			if n.eventStateInvalid.Load() {
+				continue
 			}
 			if strings.HasSuffix(event.Name, "/") {
 				continue
@@ -112,24 +144,116 @@ func (n *Notify) Start() {
 			if err != nil {
 				logrus.WithError(err).Error("transfer path")
 			}
+			access := accessEvent{key: cache, increment: 1}
 			if event.HasEvent(inotify.InCreate) {
-				n.heavykeeper.Add(cache, 10)
-			} else {
-				n.heavykeeper.Add(cache, 1)
+				access.increment = 10
 			}
+			n.enqueueAccess(accesses, access)
+		case err, ok := <-watcherErrors:
+			if !ok {
+				watcherErrors = nil
+				continue
+			}
+			if errors.Is(err, inotify.ErrEventOverflow) {
+				n.markEventStateInvalid("kernel inotify queue overflow", true)
+				continue
+			}
+			logrus.WithError(err).Error("inotify watcher error")
+		}
+	}
+}
+
+func (n *Notify) runWorker(accesses <-chan accessEvent) {
+	ticker := time.NewTicker(n.policy.DiskCheckInterval)
+	defer ticker.Stop()
+	for {
+		if n.eventStateInvalid.Load() {
+			if !n.recoverEventState(accesses) {
+				return
+			}
+		}
+
+		select {
+		case access, ok := <-accesses:
+			if !ok {
+				return
+			}
+			if n.eventStateInvalid.Load() {
+				continue
+			}
+			n.heavykeeper.Add(access.key, access.increment)
 		case <-ticker.C:
 			n.trickWorker()
 		}
 	}
-	return
+}
+
+func (n *Notify) enqueueAccess(accesses chan<- accessEvent, access accessEvent) bool {
+	if n.eventStateInvalid.Load() {
+		return false
+	}
+	select {
+	case accesses <- access:
+		return true
+	default:
+		n.markEventStateInvalid("internal access-event queue overflow", false)
+		return false
+	}
+}
+
+func (n *Notify) markEventStateInvalid(reason string, rescanWatches bool) {
+	n.eventRecoveryMu.Lock()
+	wasValid := !n.eventStateInvalid.Load()
+	n.eventStateInvalid.Store(true)
+	if wasValid {
+		n.eventStateGeneration.Add(1)
+	}
+	n.eventWatchRescanRequired = n.eventWatchRescanRequired || rescanWatches
+	n.eventRecoveryMu.Unlock()
+	if wasValid {
+		logrus.WithField("reason", reason).Warn("Invalidating hot-key state after event loss")
+	}
+}
+
+func (n *Notify) recoverEventState(accesses <-chan accessEvent) bool {
+	n.eventRecoveryMu.Lock()
+	defer n.eventRecoveryMu.Unlock()
+	if n.eventWatchRescanRequired {
+		addDirectoryWatches(n.watcher, n.transfer.listenDir)
+	}
+	if !drainAccessEvents(accesses) {
+		return false
+	}
+	n.heavykeeper.Reset()
+	n.eventWatchRescanRequired = false
+	n.eventStateInvalid.Store(false)
+	logrus.Warn("Rebuilding hot-key state after event loss")
+	return true
+}
+
+func drainAccessEvents(accesses <-chan accessEvent) bool {
+	for {
+		select {
+		case _, ok := <-accesses:
+			if !ok {
+				return false
+			}
+		default:
+			return true
+		}
+	}
 }
 
 func (n *Notify) Background() {
 	expelledChan := n.heavykeeper.Expelled()
 	usage := diskUsageSnapshot{}
 	for {
+		generation := n.eventStateGeneration.Load()
 		select {
 		case item := <-expelledChan:
+			if !n.eventStateIsCurrent(generation) {
+				continue
+			}
 			if err := usage.refresh(time.Now(), n.path, diskutil.GetDiskUsage); err != nil {
 				logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
 				continue
@@ -137,11 +261,18 @@ func (n *Notify) Background() {
 			if !n.updateEvictionState(usage.blocksFree) {
 				continue
 			}
+			if !n.eventStateIsCurrent(generation) {
+				continue
+			}
 			logrus.Infof("delete %s from expelledChan", item.Key)
 			os.Remove(item.Key)
 		}
 	}
 	return
+}
+
+func (n *Notify) eventStateIsCurrent(generation uint64) bool {
+	return !n.eventStateInvalid.Load() && generation == n.eventStateGeneration.Load()
 }
 
 func (n *Notify) Stop() {
@@ -160,6 +291,10 @@ func (n *Notify) trickWorker() {
 }
 
 func (n *Notify) topkCleaner() {
+	if n.eventStateInvalid.Load() {
+		logrus.Warn("skip cache cleanup while hot-key state is invalid")
+		return
+	}
 	blocksFree, _, _, err := n.getCleanupDiskUsage(n.path)
 	if err != nil {
 		logrus.WithError(err).WithField("path", n.path).Error("Failed to get disk usage!")
@@ -183,6 +318,10 @@ func (n *Notify) topkCleaner() {
 	})
 	deletedSinceCheck := 0
 	for _, entry := range files {
+		if n.eventStateInvalid.Load() {
+			logrus.Warn("stop cache cleanup while hot-key state is invalid")
+			return
+		}
 		_, ok := topset[entry.Path]
 		if ok {
 			continue

@@ -1,8 +1,12 @@
 package inotify
 
 import (
+	"errors"
 	"sync"
 )
+
+// ErrEventOverflow reports that the kernel dropped one or more inotify events.
+var ErrEventOverflow = errors.New("inotify event queue overflow")
 
 // Event represents a notification
 type Event struct {

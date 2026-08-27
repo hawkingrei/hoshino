@@ -183,3 +183,19 @@ func (topk *HeavyKeeper) Fading() {
 func (topk *HeavyKeeper) Total() uint64 {
 	return topk.total
 }
+
+func (topk *HeavyKeeper) Reset() {
+	for _, row := range topk.buckets {
+		clear(row)
+	}
+	topk.r = rand.New(rand.NewSource(0))
+	topk.minHeap = minheap.NewHeap(topk.k)
+	topk.total = 0
+	for {
+		select {
+		case <-topk.expelled:
+		default:
+			return
+		}
+	}
+}

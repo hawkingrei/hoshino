@@ -121,3 +121,5 @@ func (t *cleanupTopk) Expelled() <-chan heavykeeper.Item {
 }
 
 func (t *cleanupTopk) Fading() {}
+
+func (t *cleanupTopk) Reset() {}
