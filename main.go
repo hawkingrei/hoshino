@@ -44,9 +44,10 @@ import (
 
 var ListenDir = flag.String("listen-dir", "", "location to store cache entries on disk")
 var dir = flag.String("dir", "", "location to store cache entries on disk")
-var host = flag.String("host", "", "host address to listen on")
+var host = flag.String("host", "", "host address to listen on for prometheus metrics")
 var cachePort = flag.Int("cache-port", 8080, "port to listen on for cache requests")
 var metricsPort = flag.Int("metrics-port", 9092, "port to listen on for prometheus metrics scraping")
+var pprofHost = flag.String("pprof-host", "127.0.0.1", "host address to listen on for pprof; set explicitly to allow remote access")
 var pprofPort = flag.Int("pprof-port", 9091, "port to listen on for pprof")
 var level = flag.Int("level", 3, "compression level")
 var metricsUpdateInterval = flag.Duration("metrics-update-interval", time.Second*10,
@@ -103,7 +104,7 @@ func main() {
 	pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-	pprofAddr := fmt.Sprintf("%s:%d", *host, *pprofPort)
+	pprofAddr := fmt.Sprintf("%s:%d", *pprofHost, *pprofPort)
 	logrus.Infof("pprof Listening on: %s", pprofAddr)
 	logrus.WithField("mux", "pprof").WithError(
 		http.ListenAndServe(pprofAddr, pprofMux),
