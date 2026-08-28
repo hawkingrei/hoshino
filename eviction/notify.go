@@ -268,7 +268,6 @@ func (n *Notify) Background() {
 			os.Remove(item.Key)
 		}
 	}
-	return
 }
 
 func (n *Notify) eventStateIsCurrent(generation uint64) bool {
