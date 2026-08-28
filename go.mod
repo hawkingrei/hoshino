@@ -1,6 +1,6 @@
 module github.com/hawkingrei/hoshino
 
-go 1.25
+go 1.27.0
 
 require (
 	github.com/djherbis/atime v1.1.0
