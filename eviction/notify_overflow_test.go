@@ -115,6 +115,14 @@ func (t *recoveringTopk) List() []heavykeeper.Item {
 	return nil
 }
 
+func (t *recoveringTopk) Len() int {
+	return 0
+}
+
+func (t *recoveringTopk) Contains(string) bool {
+	return false
+}
+
 func (t *recoveringTopk) Expelled() <-chan heavykeeper.Item {
 	return t.expelled
 }

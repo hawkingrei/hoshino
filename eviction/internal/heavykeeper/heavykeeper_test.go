@@ -49,6 +49,12 @@ func TestReset(t *testing.T) {
 	topk := NewHeavyKeeper(2, 32, 2, 0.9, 1).(*HeavyKeeper)
 	topk.Add("first", 10)
 	topk.Add("second", 5)
+	if topk.Len() != 2 {
+		t.Fatalf("Len() before reset = %d, want 2", topk.Len())
+	}
+	if !topk.Contains("first") || !topk.Contains("second") {
+		t.Fatal("Contains() did not find tracked keys before reset")
+	}
 	if len(topk.List()) == 0 {
 		t.Fatal("top-k should contain entries before reset")
 	}
@@ -60,6 +66,9 @@ func TestReset(t *testing.T) {
 	}
 	if got := topk.Total(); got != 0 {
 		t.Fatalf("Total() after reset = %d, want 0", got)
+	}
+	if topk.Len() != 0 || topk.Contains("first") || topk.Contains("second") {
+		t.Fatal("top-k membership was not cleared by reset")
 	}
 	topk.Add("rebuilt", 1)
 	if got := topk.List(); len(got) != 1 || got[0].Key != "rebuilt" {

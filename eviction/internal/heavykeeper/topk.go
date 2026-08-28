@@ -12,6 +12,10 @@ type Topk interface {
 	Add(item string, incr uint32) (string, bool)
 	// List all topk items.
 	List() []Item
+	// Len returns the number of tracked top-k items.
+	Len() int
+	// Contains reports whether an item is currently tracked in the top-k set.
+	Contains(item string) bool
 	// Expelled watch at the expelled items.
 	Expelled() <-chan Item
 	Fading()

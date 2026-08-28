@@ -305,12 +305,7 @@ func (n *Notify) topkCleaner() {
 	}
 
 	n.heavykeeper.Fading()
-	top := n.heavykeeper.List()
-	topset := make(map[string]uint32)
-	for _, item := range top {
-		topset[item.Key] = item.Count
-	}
-	logrus.Infof("topk %d", len(top))
+	logrus.Infof("topk %d", n.heavykeeper.Len())
 	files := n.disk.GetEntries()
 	sort.Slice(files, func(i, j int) bool {
 		return files[i].LastAccess.Before(files[j].LastAccess)
@@ -321,8 +316,7 @@ func (n *Notify) topkCleaner() {
 			logrus.Warn("stop cache cleanup while hot-key state is invalid")
 			return
 		}
-		_, ok := topset[entry.Path]
-		if ok {
+		if n.heavykeeper.Contains(entry.Path) {
 			continue
 		}
 		if err = n.disk.Delete(n.disk.PathToKey(entry.Path)); err != nil {
