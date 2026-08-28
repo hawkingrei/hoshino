@@ -66,6 +66,14 @@ func (topk *HeavyKeeper) List() []Item {
 	return res
 }
 
+func (topk *HeavyKeeper) Len() int {
+	return topk.minHeap.Len()
+}
+
+func (topk *HeavyKeeper) Contains(key string) bool {
+	return topk.minHeap.Contains(key)
+}
+
 // Add add item into heavykeeper and return if item had beend add into minheap.
 // if item had been add into minheap and some item was expelled, return the expelled item.
 func (topk *HeavyKeeper) Add(key string, incr uint32) (string, bool) {
@@ -126,7 +134,7 @@ func (topk *HeavyKeeper) Add(key string, incr uint32) (string, bool) {
 		return "", true
 	}
 	var exp string
-	expelled := topk.minHeap.Add(&minheap.Node{Key: key, Count: maxCount})
+	expelled := topk.minHeap.Upsert(key, maxCount)
 	if expelled != nil {
 		topk.expell(Item{Key: expelled.Key, Count: expelled.Count})
 		exp = expelled.Key

@@ -113,7 +113,20 @@ func (t *cleanupTopk) Add(string, uint32) (string, bool) {
 }
 
 func (t *cleanupTopk) List() []heavykeeper.Item {
-	return t.items
+	panic("topkCleaner must not materialize the top-k list")
+}
+
+func (t *cleanupTopk) Len() int {
+	return len(t.items)
+}
+
+func (t *cleanupTopk) Contains(key string) bool {
+	for _, item := range t.items {
+		if item.Key == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (t *cleanupTopk) Expelled() <-chan heavykeeper.Item {

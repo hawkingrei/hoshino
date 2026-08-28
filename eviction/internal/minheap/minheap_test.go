@@ -10,6 +10,12 @@ func TestHeapMaintainsKeyIndices(t *testing.T) {
 	h.Add(&Node{Key: "a", Count: 3})
 	h.Add(&Node{Key: "b", Count: 1})
 	h.Add(&Node{Key: "c", Count: 2})
+	if h.Len() != 3 {
+		t.Fatalf("Len() = %d, want 3", h.Len())
+	}
+	if !h.Contains("b") || h.Contains("missing") {
+		t.Fatal("Contains() returned an unexpected membership result")
+	}
 	assertIndexInvariant(t, h)
 
 	bIndex, ok := h.Find("b")
@@ -39,6 +45,21 @@ func TestHeapMaintainsKeyIndices(t *testing.T) {
 		t.Fatal("Find(a) found a popped key")
 	}
 	assertIndexInvariant(t, h)
+}
+
+func TestHeapUpsertDoesNotAllocateRejectedCandidate(t *testing.T) {
+	h := NewHeap(1)
+	h.Upsert("hot", 1)
+
+	allocations := testing.AllocsPerRun(1000, func() {
+		h.Upsert("cold", 1)
+	})
+	if allocations != 0 {
+		t.Fatalf("Upsert() allocations = %v, want 0", allocations)
+	}
+	if h.Contains("cold") {
+		t.Fatal("rejected candidate was added to the heap")
+	}
 }
 
 func TestHeapAddUpdatesExistingKey(t *testing.T) {

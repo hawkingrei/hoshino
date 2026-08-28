@@ -18,21 +18,39 @@ func NewHeap(k uint32) *Heap {
 }
 
 func (h *Heap) Add(val *Node) *Node {
-	if existing, ok := h.byKey[val.Key]; ok {
-		h.Fix(existing.index, val.Count)
+	return h.upsert(val.Key, val.Count, val)
+}
+
+// Upsert updates an existing key without allocating rejected candidates.
+func (h *Heap) Upsert(key string, count uint32) *Node {
+	return h.upsert(key, count, nil)
+}
+
+func (h *Heap) upsert(key string, count uint32, candidate *Node) *Node {
+	if existing, ok := h.byKey[key]; ok {
+		h.Fix(existing.index, count)
 		return nil
 	}
 	if h.K == 0 {
-		return val
+		if candidate == nil {
+			candidate = &Node{Key: key, Count: count}
+		}
+		return candidate
 	}
 	if h.K > uint32(len(h.Nodes)) {
-		heap.Push(&h.Nodes, val)
-		h.byKey[val.Key] = val
-	} else if val.Count > h.Nodes[0].Count {
+		if candidate == nil {
+			candidate = &Node{Key: key, Count: count}
+		}
+		heap.Push(&h.Nodes, candidate)
+		h.byKey[key] = candidate
+	} else if count > h.Nodes[0].Count {
 		expelled := heap.Pop(&h.Nodes)
 		delete(h.byKey, expelled.(*Node).Key)
-		heap.Push(&h.Nodes, val)
-		h.byKey[val.Key] = val
+		if candidate == nil {
+			candidate = &Node{Key: key, Count: count}
+		}
+		heap.Push(&h.Nodes, candidate)
+		h.byKey[key] = candidate
 		node := expelled.(*Node)
 		return node
 	}
@@ -56,6 +74,15 @@ func (h *Heap) Min() uint32 {
 		return 0
 	}
 	return h.Nodes[0].Count
+}
+
+func (h *Heap) Len() int {
+	return len(h.Nodes)
+}
+
+func (h *Heap) Contains(key string) bool {
+	_, ok := h.byKey[key]
+	return ok
 }
 
 func (h *Heap) Find(key string) (int, bool) {
