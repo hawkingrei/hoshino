@@ -1,12 +1,22 @@
-load("@io_bazel_rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_library", "go_test")
 
 go_library(
-    name = "go_default_library",
-    srcs = ["diskutil.go"],
-    importpath = "github.com/hawkingrei/greenhouse/diskutil",
-    visibility = ["//visibility:public"],
-    deps = [
-        "//vendor/github.com/djherbis/atime:go_default_library",
-        "//vendor/github.com/sirupsen/logrus:go_default_library",
+    name = "diskutil",
+    srcs = [
+        "cache.go",
+        "delete_linux.go",
+        "delete_other.go",
+        "diskutil.go",
+        "identity_other.go",
+        "identity_unix.go",
     ],
+    importpath = "github.com/hawkingrei/hoshino/diskutil",
+    visibility = ["//visibility:public"],
+    deps = ["@org_golang_x_sys//unix"],
+)
+
+go_test(
+    name = "diskutil_test",
+    srcs = ["cache_test.go"],
+    embed = [":diskutil"],
 )

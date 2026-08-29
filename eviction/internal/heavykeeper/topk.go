@@ -16,9 +16,11 @@ type Topk interface {
 	Len() int
 	// Contains reports whether an item is currently tracked in the top-k set.
 	Contains(item string) bool
-	// Expelled watch at the expelled items.
-	Expelled() <-chan Item
+	// Remove discards exact top-k metadata for an entry removed from disk.
+	Remove(item string)
 	Fading()
 	// Reset discards all observations while preserving the expelled channel.
 	Reset()
+	// Restore rebuilds the estimator from a previously checkpointed hot set.
+	Restore(items []Item)
 }

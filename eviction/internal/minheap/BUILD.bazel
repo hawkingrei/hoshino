@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "minheap",
+    srcs = ["minheap.go"],
+    importpath = "github.com/hawkingrei/hoshino/eviction/internal/minheap",
+    visibility = ["//eviction/internal/heavykeeper:__pkg__"],
+)
+
+go_test(
+    name = "minheap_test",
+    srcs = ["minheap_test.go"],
+    embed = [":minheap"],
+)

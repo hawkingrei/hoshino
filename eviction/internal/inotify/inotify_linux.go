@@ -3,7 +3,7 @@
 
 // Copyright 2010 The Go Authors. All rights reserved.
 // Use of this source code is governed by a BSD-style
-// license that can be found in the LICENSE file.
+// license that can be found in third_party/go/LICENSE.
 
 /*
 Package inotify implements a wrapper for the Linux inotify system.
@@ -36,23 +36,25 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 const watcherEventBufferSize = 4096
 
 // NewWatcher creates and returns a new inotify instance using inotify_init(2)
 func NewWatcher() (*Watcher, error) {
-	fd, errno := syscall.InotifyInit1(syscall.IN_CLOEXEC)
-	if fd == -1 {
-		return nil, os.NewSyscallError("inotify_init", errno)
+	fd, err := unix.InotifyInit1(unix.IN_CLOEXEC | unix.IN_NONBLOCK)
+	if err != nil {
+		return nil, os.NewSyscallError("inotify_init", err)
 	}
 	w := &Watcher{
 		fd:      fd,
 		watches: make(map[string]*watch),
 		paths:   make(map[int]string),
 		Event:   make(chan *Event, watcherEventBufferSize),
-		Error:   make(chan error, 1),
-		done:    make(chan bool, 1),
+		Error:   make(chan error, watcherEventBufferSize),
+		done:    make(chan struct{}),
 	}
 
 	go w.readEvents()
@@ -63,23 +65,22 @@ func NewWatcher() (*Watcher, error) {
 // It sends a message to the reader goroutine to quit and removes all watches
 // associated with the inotify instance
 func (w *Watcher) Close() error {
+	w.mu.Lock()
 	if w.isClosed {
+		w.mu.Unlock()
 		return nil
 	}
 	w.isClosed = true
-
-	// Send "quit" message to the reader goroutine
-	w.done <- true
-	for path := range w.watches {
-		w.RemoveWatch(path)
-	}
-
+	close(w.done)
+	w.mu.Unlock()
 	return nil
 }
 
 // AddWatch adds path to the watched file set.
 // The flags are interpreted as described in inotify_add_watch(2).
 func (w *Watcher) AddWatch(path string, flags uint32) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if w.isClosed {
 		return errors.New("inotify instance already closed")
 	}
@@ -90,11 +91,8 @@ func (w *Watcher) AddWatch(path string, flags uint32) error {
 		flags |= syscall.IN_MASK_ADD
 	}
 
-	w.mu.Lock() // synchronize with readEvents goroutine
-
 	wd, err := syscall.InotifyAddWatch(w.fd, path, flags)
 	if err != nil {
-		w.mu.Unlock()
 		return &os.PathError{
 			Op:   "inotify_add_watch",
 			Path: path,
@@ -106,7 +104,6 @@ func (w *Watcher) AddWatch(path string, flags uint32) error {
 		w.watches[path] = &watch{wd: uint32(wd), flags: flags}
 		w.paths[wd] = path
 	}
-	w.mu.Unlock()
 	return nil
 }
 
@@ -117,6 +114,8 @@ func (w *Watcher) Watch(path string) error {
 
 // RemoveWatch removes path from the watched file set.
 func (w *Watcher) RemoveWatch(path string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	watch, ok := w.watches[path]
 	if !ok {
 		return fmt.Errorf("can't remove non-existent inotify watch for: %s", path)
@@ -130,10 +129,7 @@ func (w *Watcher) RemoveWatch(path string) error {
 		}
 	}
 	delete(w.watches, path)
-	// Locking here to protect the read from paths in readEvents.
-	w.mu.Lock()
 	delete(w.paths, int(watch.wd))
-	w.mu.Unlock()
 	return nil
 }
 
@@ -141,34 +137,32 @@ func (w *Watcher) RemoveWatch(path string) error {
 // received events into Event objects and sends them via the Event channel
 func (w *Watcher) readEvents() {
 	var buf [syscall.SizeofInotifyEvent * 4096]byte
+	defer syscall.Close(w.fd)
+	defer close(w.Event)
+	defer close(w.Error)
 
 	for {
+		if !w.waitReadable() {
+			return
+		}
 		n, err := syscall.Read(w.fd, buf[:])
-		// See if there is a message on the "done" channel
-		var done bool
 		select {
-		case done = <-w.done:
+		case <-w.done:
+			return
 		default:
 		}
-
-		// If EOF or a "done" message is received
-		if n == 0 || done {
-			// The syscall.Close can be slow.  Close
-			// w.Event first.
-			close(w.Event)
-			err := syscall.Close(w.fd)
-			if err != nil {
-				w.Error <- os.NewSyscallError("close", err)
-			}
-			close(w.Error)
+		if n == 0 {
 			return
 		}
 		if n < 0 {
-			w.Error <- os.NewSyscallError("read", err)
+			if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EINTR) {
+				continue
+			}
+			w.reportError(os.NewSyscallError("read", err))
 			continue
 		}
 		if n < syscall.SizeofInotifyEvent {
-			w.Error <- errors.New("inotify: short read in readEvents()")
+			w.reportError(errors.New("inotify: short read in readEvents()"))
 			continue
 		}
 
@@ -201,11 +195,39 @@ func (w *Watcher) readEvents() {
 					// The filename is padded with NUL bytes. TrimRight() gets rid of those.
 					event.Name += "/" + strings.TrimRight(string(bytes[0:nameLen]), "\000")
 				}
-				// Send the event on the events channel
-				w.Event <- event
+				select {
+				case w.Event <- event:
+				default:
+					w.reportError(ErrEventOverflow)
+				}
 			}
 			// Move to the next event in the buffer
 			offset += syscall.SizeofInotifyEvent + nameLen
+		}
+	}
+}
+
+func (w *Watcher) waitReadable() bool {
+	for {
+		select {
+		case <-w.done:
+			return false
+		default:
+		}
+		pollFDs := []unix.PollFd{{Fd: int32(w.fd), Events: unix.POLLIN}}
+		_, err := unix.Poll(pollFDs, 100)
+		if errors.Is(err, unix.EINTR) {
+			continue
+		}
+		if err != nil {
+			w.reportError(fmt.Errorf("inotify poll: %w", err))
+			return false
+		}
+		if pollFDs[0].Revents&unix.POLLIN != 0 {
+			return true
+		}
+		if pollFDs[0].Revents&(unix.POLLERR|unix.POLLHUP|unix.POLLNVAL) != 0 {
+			return false
 		}
 	}
 }
@@ -214,8 +236,15 @@ func (w *Watcher) reportOverflow(mask uint32) bool {
 	if mask&InQOverflow == 0 {
 		return false
 	}
-	w.Error <- ErrEventOverflow
+	w.reportError(ErrEventOverflow)
 	return true
+}
+
+func (w *Watcher) reportError(err error) {
+	select {
+	case w.Error <- err:
+	default:
+	}
 }
 
 // String formats the event e in the form

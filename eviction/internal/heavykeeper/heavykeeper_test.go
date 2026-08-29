@@ -3,16 +3,17 @@ package heavykeeper
 import (
 	"math"
 	"math/rand"
+	"sort"
 	"strconv"
+	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 )
 
 func TestTopkList(t *testing.T) {
 	// zipfan distribution
-	zipf := rand.NewZipf(rand.New(rand.NewSource(time.Now().Unix())), 3, 2, 1000)
+	zipf := rand.NewZipf(rand.New(rand.NewSource(1)), 3, 2, 1000)
 	topk := NewHeavyKeeper(10, 10000, 5, 0.925, 0)
 	dataMap := make(map[string]int)
 	for i := 0; i < 10000; i++ {
@@ -26,14 +27,24 @@ func TestTopkList(t *testing.T) {
 		t.Logf("item %s, count %d, expect %d", node.Key, node.Count, dataMap[node.Key])
 	}
 	t.Logf("err rate avg:%f", rate)
+	expected := make([]Item, 0, len(dataMap))
+	for key, count := range dataMap {
+		expected = append(expected, Item{Key: key, Count: uint32(count)})
+	}
+	sort.Slice(expected, func(i, j int) bool {
+		if expected[i].Count != expected[j].Count {
+			return expected[i].Count > expected[j].Count
+		}
+		return expected[i].Key < expected[j].Key
+	})
 	for i, node := range topk.List() {
-		assert.Equal(t, strconv.FormatInt(int64(i), 10), node.Key)
+		assert.Equal(t, expected[i].Key, node.Key)
 		t.Logf("%s: %d", node.Key, node.Count)
 	}
 }
 
 func BenchmarkAdd(b *testing.B) {
-	zipf := rand.NewZipf(rand.New(rand.NewSource(time.Now().Unix())), 2, 2, 1000)
+	zipf := rand.NewZipf(rand.New(rand.NewSource(1)), 2, 2, 1000)
 	var data []string = make([]string, 1000)
 	for i := 0; i < 1000; i++ {
 		data[i] = strconv.FormatUint(zipf.Uint64(), 10)
@@ -73,5 +84,31 @@ func TestReset(t *testing.T) {
 	topk.Add("rebuilt", 1)
 	if got := topk.List(); len(got) != 1 || got[0].Key != "rebuilt" {
 		t.Fatalf("List() after rebuild = %v, want rebuilt entry", got)
+	}
+}
+
+func TestConcurrentPolicyAccess(t *testing.T) {
+	topk := NewHeavyKeeper(128, 1024, 4, 0.9, 1)
+	var workers sync.WaitGroup
+	for worker := 0; worker < 8; worker++ {
+		workers.Add(1)
+		go func(worker int) {
+			defer workers.Done()
+			for i := 0; i < 1000; i++ {
+				key := strconv.Itoa((worker * 1000) + i)
+				topk.Add(key, 1)
+				topk.Contains(key)
+				if i%100 == 0 {
+					topk.List()
+				}
+			}
+		}(worker)
+	}
+	workers.Wait()
+	topk.Fading()
+	topk.Remove("1")
+	topk.Restore(topk.List())
+	if topk.Len() > 128 {
+		t.Fatalf("Len() = %d, want at most 128", topk.Len())
 	}
 }

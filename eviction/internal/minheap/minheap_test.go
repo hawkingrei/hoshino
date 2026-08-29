@@ -77,6 +77,41 @@ func TestHeapAddUpdatesExistingKey(t *testing.T) {
 	assertIndexInvariant(t, h)
 }
 
+func TestHeapScaleDownRestoresHeapInvariant(t *testing.T) {
+	h := NewHeap(5)
+	for _, node := range []*Node{
+		{Key: "a", Count: 9},
+		{Key: "b", Count: 2},
+		{Key: "c", Count: 5},
+		{Key: "d", Count: 8},
+		{Key: "expired", Count: 1},
+	} {
+		h.Add(node)
+	}
+	h.ScaleDown()
+	assertIndexInvariant(t, h)
+	if h.Contains("expired") {
+		t.Fatal("zero-count entry remained in the hot set")
+	}
+	if got := h.Pop(); got.Key != "b" || got.Count != 1 {
+		t.Fatalf("Pop() = %#v, want b with count 1", got)
+	}
+}
+
+func TestHeapRemoveMaintainsIndex(t *testing.T) {
+	h := NewHeap(3)
+	h.Upsert("a", 1)
+	h.Upsert("b", 2)
+	h.Upsert("c", 3)
+	if !h.Remove("b") || h.Remove("missing") {
+		t.Fatal("Remove() returned an unexpected result")
+	}
+	if h.Contains("b") {
+		t.Fatal("removed key remains indexed")
+	}
+	assertIndexInvariant(t, h)
+}
+
 func assertIndexInvariant(t *testing.T, h *Heap) {
 	t.Helper()
 	if len(h.byKey) != len(h.Nodes) {

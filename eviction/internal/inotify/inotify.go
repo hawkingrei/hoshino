@@ -32,6 +32,6 @@ type Watcher struct {
 	paths    map[int]string    // Map of watched paths (key: watch descriptor)
 	Error    chan error        // Errors are sent on this channel
 	Event    chan *Event       // Events are returned on this channel
-	done     chan bool         // Channel for sending a "quit message" to the reader goroutine
+	done     chan struct{}     // Closed to stop the reader goroutine
 	isClosed bool              // Set to true when Close() is first called
 }

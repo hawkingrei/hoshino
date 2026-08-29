@@ -1,0 +1,25 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "heavykeeper",
+    srcs = [
+        "heavykeeper.go",
+        "topk.go",
+    ],
+    importpath = "github.com/hawkingrei/hoshino/eviction/internal/heavykeeper",
+    visibility = ["//eviction:__pkg__"],
+    deps = [
+        "//eviction/internal/minheap",
+        "@com_github_twmb_murmur3//:murmur3",
+    ],
+)
+
+go_test(
+    name = "heavykeeper_test",
+    srcs = [
+        "benchmark_test.go",
+        "heavykeeper_test.go",
+    ],
+    embed = [":heavykeeper"],
+    deps = ["@com_github_stretchr_testify//assert"],
+)

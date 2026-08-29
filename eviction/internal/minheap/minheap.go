@@ -85,6 +85,26 @@ func (h *Heap) Contains(key string) bool {
 	return ok
 }
 
+func (h *Heap) Remove(key string) bool {
+	node, ok := h.byKey[key]
+	if !ok {
+		return false
+	}
+	heap.Remove(&h.Nodes, node.index)
+	delete(h.byKey, key)
+	return true
+}
+
+func (h *Heap) ScaleDown() {
+	for _, node := range h.Nodes {
+		node.Count >>= 1
+	}
+	heap.Init(&h.Nodes)
+	for len(h.Nodes) > 0 && h.Nodes[0].Count == 0 {
+		h.Pop()
+	}
+}
+
 func (h *Heap) Find(key string) (int, bool) {
 	node, ok := h.byKey[key]
 	if !ok {
