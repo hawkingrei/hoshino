@@ -6,6 +6,7 @@ package heavykeeper
 import (
 	"math"
 	"math/rand"
+	"sync"
 
 	"github.com/hawkingrei/hoshino/eviction/internal/minheap"
 	"github.com/twmb/murmur3"
@@ -15,6 +16,7 @@ const LOOKUP_TABLE = 256
 
 // Topk implement by heavykeeper algorithm.
 type HeavyKeeper struct {
+	mu          sync.RWMutex
 	k           uint32
 	width       uint32
 	depth       uint32
@@ -22,11 +24,10 @@ type HeavyKeeper struct {
 	lookupTable []float64
 	minCount    uint32
 
-	r        *rand.Rand
-	buckets  [][]bucket
-	minHeap  *minheap.Heap
-	expelled chan Item
-	total    uint64
+	r       *rand.Rand
+	buckets [][]bucket
+	minHeap *minheap.Heap
+	total   uint64
 }
 
 func NewHeavyKeeper(k, width, depth uint32, decay float64, min uint32) Topk {
@@ -44,7 +45,6 @@ func NewHeavyKeeper(k, width, depth uint32, decay float64, min uint32) Topk {
 		buckets:     arrays,
 		r:           rand.New(rand.NewSource(0)),
 		minHeap:     minheap.NewHeap(k),
-		expelled:    make(chan Item, 32),
 		minCount:    min,
 	}
 	for i := 0; i < LOOKUP_TABLE; i++ {
@@ -53,11 +53,9 @@ func NewHeavyKeeper(k, width, depth uint32, decay float64, min uint32) Topk {
 	return topk
 }
 
-func (topk *HeavyKeeper) Expelled() <-chan Item {
-	return topk.expelled
-}
-
 func (topk *HeavyKeeper) List() []Item {
+	topk.mu.RLock()
+	defer topk.mu.RUnlock()
 	items := topk.minHeap.Sorted()
 	res := make([]Item, 0, len(items))
 	for _, item := range items {
@@ -67,16 +65,32 @@ func (topk *HeavyKeeper) List() []Item {
 }
 
 func (topk *HeavyKeeper) Len() int {
+	topk.mu.RLock()
+	defer topk.mu.RUnlock()
 	return topk.minHeap.Len()
 }
 
 func (topk *HeavyKeeper) Contains(key string) bool {
+	topk.mu.RLock()
+	defer topk.mu.RUnlock()
 	return topk.minHeap.Contains(key)
+}
+
+func (topk *HeavyKeeper) Remove(key string) {
+	topk.mu.Lock()
+	defer topk.mu.Unlock()
+	topk.minHeap.Remove(key)
 }
 
 // Add add item into heavykeeper and return if item had beend add into minheap.
 // if item had been add into minheap and some item was expelled, return the expelled item.
 func (topk *HeavyKeeper) Add(key string, incr uint32) (string, bool) {
+	topk.mu.Lock()
+	defer topk.mu.Unlock()
+	return topk.add(key, incr)
+}
+
+func (topk *HeavyKeeper) add(key string, incr uint32) (string, bool) {
 	keyBytes := []byte(key)
 	itemFingerprint := murmur3.Sum32(keyBytes)
 	var maxCount uint32
@@ -136,18 +150,10 @@ func (topk *HeavyKeeper) Add(key string, incr uint32) (string, bool) {
 	var exp string
 	expelled := topk.minHeap.Upsert(key, maxCount)
 	if expelled != nil {
-		topk.expell(Item{Key: expelled.Key, Count: expelled.Count})
 		exp = expelled.Key
 	}
 
 	return exp, true
-}
-
-func (topk *HeavyKeeper) expell(item Item) {
-	select {
-	case topk.expelled <- item:
-	default:
-	}
 }
 
 type bucket struct {
@@ -177,33 +183,46 @@ func max(x, y uint32) uint32 {
 }
 
 func (topk *HeavyKeeper) Fading() {
+	topk.mu.Lock()
+	defer topk.mu.Unlock()
 	for _, row := range topk.buckets {
 		for i := range row {
 			row[i].count = row[i].count >> 1
 		}
 	}
-	for i := 0; i < len(topk.minHeap.Nodes); i++ {
-		topk.minHeap.Nodes[i].Count = topk.minHeap.Nodes[i].Count >> 1
-	}
+	topk.minHeap.ScaleDown()
 	topk.total = topk.total >> 1
 }
 
 func (topk *HeavyKeeper) Total() uint64 {
+	topk.mu.RLock()
+	defer topk.mu.RUnlock()
 	return topk.total
 }
 
 func (topk *HeavyKeeper) Reset() {
+	topk.mu.Lock()
+	defer topk.mu.Unlock()
+	topk.reset()
+}
+
+func (topk *HeavyKeeper) reset() {
 	for _, row := range topk.buckets {
 		clear(row)
 	}
 	topk.r = rand.New(rand.NewSource(0))
 	topk.minHeap = minheap.NewHeap(topk.k)
 	topk.total = 0
-	for {
-		select {
-		case <-topk.expelled:
-		default:
-			return
+}
+
+func (topk *HeavyKeeper) Restore(items []Item) {
+	topk.mu.Lock()
+	defer topk.mu.Unlock()
+	topk.reset()
+	for _, item := range items {
+		if item.Key == "" || item.Count == 0 {
+			continue
 		}
+		topk.add(item.Key, item.Count)
 	}
 }

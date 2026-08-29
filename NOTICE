@@ -1,0 +1,11 @@
+Hoshino
+Copyright 2023-2026 Weizhen Wang
+
+This product includes software developed by The Kubernetes Authors under the
+Apache License, Version 2.0. The original notices remain in the relevant source
+files.
+
+The inotify implementation includes code derived from The Go Authors under a
+BSD-style license. The original notice remains in
+eviction/internal/inotify/inotify_linux.go and the license is reproduced in
+third_party/go/LICENSE.

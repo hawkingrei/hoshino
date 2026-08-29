@@ -1,0 +1,18 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "inotify",
+    srcs = [
+        "inotify.go",
+        "inotify_linux.go",
+    ],
+    importpath = "github.com/hawkingrei/hoshino/eviction/internal/inotify",
+    visibility = ["//eviction:__pkg__"],
+    deps = ["@org_golang_x_sys//unix"],
+)
+
+go_test(
+    name = "inotify_test",
+    srcs = ["inotify_linux_test.go"],
+    embed = [":inotify"],
+)

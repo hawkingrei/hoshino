@@ -1,0 +1,92 @@
+load("@gazelle//:def.bzl", "gazelle")
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+load("@rules_oci//oci:defs.bzl", "oci_image", "oci_push")
+load("@rules_pkg//pkg:mappings.bzl", "pkg_attributes", "pkg_files")
+load("@rules_pkg//pkg:tar.bzl", "pkg_tar")
+
+package(default_visibility = ["//visibility:public"])
+
+# gazelle:prefix github.com/hawkingrei/hoshino
+gazelle(name = "gazelle")
+
+go_library(
+    name = "hoshino_lib",
+    srcs = [
+        "main.go",
+        "prometheus.go",
+    ],
+    importpath = "github.com/hawkingrei/hoshino",
+    visibility = ["//visibility:private"],
+    deps = [
+        "//diskutil",
+        "//eviction",
+        "@com_github_prometheus_client_golang//prometheus",
+        "@com_github_prometheus_client_golang//prometheus/promhttp",
+        "@com_github_sirupsen_logrus//:logrus",
+    ],
+)
+
+go_binary(
+    name = "hoshino",
+    embed = [":hoshino_lib"],
+    goarch = "amd64",
+    goos = "linux",
+    pure = "on",
+)
+
+go_test(
+    name = "hoshino_test",
+    srcs = ["main_test.go"],
+    embed = [":hoshino_lib"],
+)
+
+pkg_files(
+    name = "hoshino_binary",
+    srcs = [":hoshino"],
+    attributes = pkg_attributes(mode = "0755"),
+    prefix = "/usr/local/bin",
+    renames = {":hoshino": "hoshino"},
+)
+
+pkg_files(
+    name = "hoshino_notices",
+    srcs = [
+        "LICENSE",
+        "NOTICE",
+    ],
+    prefix = "/licenses/hoshino",
+)
+
+pkg_files(
+    name = "go_license",
+    srcs = ["third_party/go/LICENSE"],
+    prefix = "/licenses/hoshino/third_party/go",
+)
+
+pkg_tar(
+    name = "hoshino_layer",
+    srcs = [
+        ":go_license",
+        ":hoshino_binary",
+        ":hoshino_notices",
+    ],
+)
+
+oci_image(
+    name = "image",
+    base = "@distroless_static_debian12_nonroot_linux_amd64",
+    entrypoint = ["/usr/local/bin/hoshino"],
+    labels = {
+        "org.opencontainers.image.description": "Node-local Bazel disk-cache heat tracking and safe eviction",
+        "org.opencontainers.image.licenses": "Apache-2.0",
+        "org.opencontainers.image.source": "https://github.com/hawkingrei/hoshino",
+    },
+    tars = [":hoshino_layer"],
+    user = "65532:65532",
+)
+
+oci_push(
+    name = "push",
+    image = ":image",
+    repository = "ghcr.io/hawkingrei/hoshino",
+)

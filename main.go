@@ -1,139 +1,246 @@
-/*
-Copyright 2018 The Kubernetes Authors.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
-// greenhouse implements a bazel remote cache service [1]
-// supporting arbitrarily many workspaces stored within the same
-// top level directory.
-//
-// the first path segment in each {PUT,GET} request is mapped to an individual
-// workspace cache, the remaining segments should follow [2].
-//
-// nursery assumes you are using SHA256
-//
-// [1] https://docs.bazel.build/versions/master/remote-caching.html
-// [2] https://docs.bazel.build/versions/master/remote-caching.html#http-caching-protocol
 package main
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"math"
 	"net/http"
 	"net/http/pprof"
 	"os"
+	"os/signal"
+	"path/filepath"
+	"strconv"
+	"syscall"
 	"time"
 
-	"github.com/hawkingrei/hoshino/diskutil"
 	"github.com/hawkingrei/hoshino/eviction"
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/sirupsen/logrus"
 )
 
-var ListenDir = flag.String("listen-dir", "", "location to store cache entries on disk")
-var dir = flag.String("dir", "", "location to store cache entries on disk")
-var host = flag.String("host", "", "host address to listen on for prometheus metrics")
-var cachePort = flag.Int("cache-port", 8080, "port to listen on for cache requests")
-var metricsPort = flag.Int("metrics-port", 9092, "port to listen on for prometheus metrics scraping")
-var pprofHost = flag.String("pprof-host", "127.0.0.1", "host address to listen on for pprof; set explicitly to allow remote access")
-var pprofPort = flag.Int("pprof-port", 9091, "port to listen on for pprof")
-var level = flag.Int("level", 3, "compression level")
-var metricsUpdateInterval = flag.Duration("metrics-update-interval", time.Second*10,
-	"interval between updating disk metrics")
+const gibibyte = int64(1 << 30)
 
-// eviction knobs
-var minPercentBlocksFree = flag.Float64("min-percent-blocks-free", 5,
-	"minimum percent of blocks free on --dir's disk before evicting entries")
-var evictUntilPercentBlocksFree = flag.Float64("evict-until-percent-blocks-free", 20,
-	"continue evicting from the cache until at least this percent of blocks are free")
-var diskCheckInterval = flag.Duration("disk-check-interval", time.Second*10,
-	"interval between checking disk usage (and potentially evicting entries)")
+type options struct {
+	cacheDir                    string
+	activityLock                string
+	checkpointFile              string
+	host                        string
+	metricsPort                 int
+	pprofHost                   string
+	pprofPort                   int
+	shadow                      bool
+	diskCheckInterval           time.Duration
+	checkpointInterval          time.Duration
+	minimumResidence            time.Duration
+	warmupDuration              time.Duration
+	topKDecayInterval           time.Duration
+	minPercentBlocksFree        float64
+	evictUntilPercentBlocksFree float64
+	maxCacheGiB                 uint64
+	targetCacheGiB              uint64
+	minActionCacheGiB           uint64
+	cleanupBatchSize            int
+	topKCapacity                uint
+	topKWidth                   uint
+	topKDepth                   uint
+	topKDecay                   float64
+	topKMinCount                uint
+}
 
-// global metrics object, see prometheus.go
-var promMetrics *prometheusMetrics
+func parseOptions(args []string) (options, error) {
+	var opts options
+	flags := flag.NewFlagSet("hoshino", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	flags.StringVar(&opts.cacheDir, "cache-dir", "", "Bazel native disk-cache root")
+	flags.StringVar(&opts.activityLock, "activity-lock", "", "shared Bazel activity lock file")
+	flags.StringVar(&opts.checkpointFile, "checkpoint-file", "", "hot-set checkpoint file")
+	flags.StringVar(&opts.host, "host", "0.0.0.0", "health and metrics listen address")
+	flags.IntVar(&opts.metricsPort, "metrics-port", 9092, "health and metrics listen port")
+	flags.StringVar(&opts.pprofHost, "pprof-host", "127.0.0.1", "pprof listen address")
+	flags.IntVar(&opts.pprofPort, "pprof-port", 0, "pprof listen port; zero disables pprof")
+	flags.BoolVar(&opts.shadow, "shadow", true, "propose victims without deleting cache entries")
+	flags.DurationVar(&opts.diskCheckInterval, "disk-check-interval", time.Minute, "interval between cache pressure checks")
+	flags.DurationVar(&opts.checkpointInterval, "checkpoint-interval", 5*time.Minute, "interval between hot-set checkpoints")
+	flags.DurationVar(&opts.minimumResidence, "minimum-residence", time.Hour, "minimum entry age before eviction")
+	flags.DurationVar(&opts.warmupDuration, "warmup-duration", 30*time.Minute, "deletion freeze after startup without a checkpoint or watcher loss")
+	flags.DurationVar(&opts.topKDecayInterval, "top-k-decay-interval", time.Hour, "interval between HeavyKeeper decay passes")
+	flags.Float64Var(&opts.minPercentBlocksFree, "min-percent-blocks-free", 30, "node free-space percentage that starts eviction")
+	flags.Float64Var(&opts.evictUntilPercentBlocksFree, "evict-until-percent-blocks-free", 35, "node free-space percentage that stops eviction")
+	flags.Uint64Var(&opts.maxCacheGiB, "max-cache-gib", 400, "cache size in GiB that starts eviction")
+	flags.Uint64Var(&opts.targetCacheGiB, "target-cache-gib", 320, "cache size in GiB that stops eviction")
+	flags.Uint64Var(&opts.minActionCacheGiB, "min-action-cache-gib", 4, "minimum protected action-cache budget in GiB")
+	flags.IntVar(&opts.cleanupBatchSize, "cleanup-batch-size", 100, "entries deleted between disk usage refreshes")
+	flags.UintVar(&opts.topKCapacity, "top-k-capacity", 100_000, "maximum number of hot keys retained")
+	flags.UintVar(&opts.topKWidth, "top-k-width", 1<<17, "HeavyKeeper sketch width")
+	flags.UintVar(&opts.topKDepth, "top-k-depth", 4, "HeavyKeeper sketch depth")
+	flags.Float64Var(&opts.topKDecay, "top-k-decay", 0.9, "HeavyKeeper decay probability")
+	flags.UintVar(&opts.topKMinCount, "top-k-min-count", 1, "minimum count admitted to the hot set")
+	if err := flags.Parse(args); err != nil {
+		return options{}, err
+	}
+	if flags.NArg() != 0 {
+		return options{}, fmt.Errorf("unexpected positional arguments: %v", flags.Args())
+	}
+	if opts.cacheDir == "" {
+		return options{}, errors.New("--cache-dir must be set")
+	}
+	if opts.activityLock == "" {
+		opts.activityLock = filepath.Join(filepath.Dir(opts.cacheDir), "bazel-cache.activity.lock")
+	}
+	if opts.checkpointFile == "" {
+		opts.checkpointFile = filepath.Join(filepath.Dir(opts.cacheDir), "hoshino-state", "hot-set.json")
+	}
+	if opts.metricsPort <= 0 || opts.metricsPort > 65535 || opts.pprofPort < 0 || opts.pprofPort > 65535 {
+		return options{}, errors.New("listen ports must be in range 1-65535; pprof may also be zero")
+	}
+	return opts, nil
+}
 
-func init() {
-	logrus.SetFormatter(
-		NewDefaultFieldsFormatter(nil, logrus.Fields{"component": "greenhouse"}),
-	)
-	logrus.SetOutput(os.Stdout)
-	promMetrics = initMetrics()
+func (o options) evictionConfig(observer eviction.Observer) (eviction.Config, error) {
+	maxCacheBytes, err := gibToBytes(o.maxCacheGiB)
+	if err != nil {
+		return eviction.Config{}, err
+	}
+	targetCacheBytes, err := gibToBytes(o.targetCacheGiB)
+	if err != nil {
+		return eviction.Config{}, err
+	}
+	minActionCacheBytes, err := gibToBytes(o.minActionCacheGiB)
+	if err != nil {
+		return eviction.Config{}, err
+	}
+	if o.topKCapacity > math.MaxUint32 || o.topKWidth > math.MaxUint32 || o.topKDepth > math.MaxUint32 || o.topKMinCount > math.MaxUint32 {
+		return eviction.Config{}, errors.New("top-k values must fit in uint32")
+	}
+	return eviction.Config{
+		CacheDir:       o.cacheDir,
+		ActivityLock:   o.activityLock,
+		CheckpointFile: o.checkpointFile,
+		Observer:       observer,
+		Policy: eviction.EvictionPolicy{
+			DiskCheckInterval:           o.diskCheckInterval,
+			CheckpointInterval:          o.checkpointInterval,
+			TopKDecayInterval:           o.topKDecayInterval,
+			MinimumResidence:            o.minimumResidence,
+			WarmupDuration:              o.warmupDuration,
+			MinPercentBlocksFree:        o.minPercentBlocksFree,
+			EvictUntilPercentBlocksFree: o.evictUntilPercentBlocksFree,
+			MaxCacheBytes:               maxCacheBytes,
+			TargetCacheBytes:            targetCacheBytes,
+			MinActionCacheBytes:         minActionCacheBytes,
+			CleanupBatchSize:            o.cleanupBatchSize,
+			TopKCapacity:                uint32(o.topKCapacity),
+			TopKWidth:                   uint32(o.topKWidth),
+			TopKDepth:                   uint32(o.topKDepth),
+			TopKDecay:                   o.topKDecay,
+			TopKMinCount:                uint32(o.topKMinCount),
+			Shadow:                      o.shadow,
+		},
+	}, nil
+}
+
+func gibToBytes(value uint64) (int64, error) {
+	if value > math.MaxInt64/uint64(gibibyte) {
+		return 0, fmt.Errorf("GiB value is too large: %d", value)
+	}
+	return int64(value) * gibibyte, nil
+}
+
+func run(ctx context.Context, opts options) error {
+	metrics := newMetrics(prometheus.DefaultRegisterer)
+	config, err := opts.evictionConfig(metrics)
+	if err != nil {
+		return err
+	}
+	manager, err := eviction.New(config)
+	if err != nil {
+		return err
+	}
+
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsMux.Handle("/prometheus", promhttp.Handler())
+	metricsMux.HandleFunc("/healthz", func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write([]byte("ok\n"))
+	})
+	metricsMux.HandleFunc("/readyz", func(response http.ResponseWriter, _ *http.Request) {
+		if !manager.Ready() {
+			http.Error(response, "not ready", http.StatusServiceUnavailable)
+			return
+		}
+		response.WriteHeader(http.StatusOK)
+		_, _ = response.Write([]byte("ready\n"))
+	})
+	metricsServer := &http.Server{
+		Addr:              opts.host + ":" + strconv.Itoa(opts.metricsPort),
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+
+	var pprofServer *http.Server
+	if opts.pprofPort != 0 {
+		pprofMux := http.NewServeMux()
+		pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
+		pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		pprofServer = &http.Server{
+			Addr:              opts.pprofHost + ":" + strconv.Itoa(opts.pprofPort),
+			Handler:           pprofMux,
+			ReadHeaderTimeout: 5 * time.Second,
+		}
+	}
+
+	runContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	managerErrors := make(chan error, 1)
+	serverErrors := make(chan error, 2)
+	go func() { managerErrors <- manager.Run(runContext) }()
+	go func() {
+		if err := metricsServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+			serverErrors <- err
+		}
+	}()
+	if pprofServer != nil {
+		go func() {
+			if err := pprofServer.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+				serverErrors <- err
+			}
+		}()
+	}
+
+	var runErr error
+	select {
+	case <-ctx.Done():
+	case runErr = <-managerErrors:
+	case runErr = <-serverErrors:
+	}
+	cancel()
+	shutdownContext, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	runErr = errors.Join(runErr, metricsServer.Shutdown(shutdownContext))
+	if pprofServer != nil {
+		runErr = errors.Join(runErr, pprofServer.Shutdown(shutdownContext))
+	}
+	return runErr
 }
 
 func main() {
-	flag.Parse()
-	if *dir == "" {
-		logrus.Fatal("--dir must be set!")
-	}
-	if *ListenDir == "" {
-		logrus.Fatal("--listen-dir must be set!")
-	}
-	policy := eviction.EvictionPolicy{
-		DiskCheckInterval:           *diskCheckInterval,
-		MinPercentBlocksFree:        *minPercentBlocksFree,
-		EvictUntilPercentBlocksFree: *evictUntilPercentBlocksFree,
-	}
-	notify, err := eviction.New(*dir, *ListenDir, policy)
+	logrus.SetFormatter(NewDefaultFieldsFormatter(nil, logrus.Fields{"component": "hoshino"}))
+	logrus.SetOutput(os.Stdout)
+	opts, err := parseOptions(os.Args[1:])
 	if err != nil {
-		logrus.WithError(err).Fatal("Failed to initialize eviction")
+		logrus.WithError(err).Fatal("Invalid configuration")
 	}
-	go notify.Start()
-	go notify.Background()
-
-	go updateMetrics(*metricsUpdateInterval, *dir)
-
-	// listen for prometheus scraping
-	metricsMux := http.NewServeMux()
-	metricsMux.Handle("/prometheus", promhttp.Handler())
-	metricsAddr := fmt.Sprintf("%s:%d", *host, *metricsPort)
-	go func() {
-		logrus.Infof("Metrics Listening on: %s", metricsAddr)
-		logrus.WithField("mux", "metrics").WithError(
-			http.ListenAndServe(metricsAddr, metricsMux),
-		).Fatal("ListenAndServe returned.")
-	}()
-
-	// listen for pprofMux
-	pprofMux := http.NewServeMux()
-	pprofMux.HandleFunc("/debug/pprof/", pprof.Index)
-	pprofMux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-	pprofMux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-	pprofMux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-	pprofMux.HandleFunc("/debug/pprof/trace", pprof.Trace)
-	pprofAddr := fmt.Sprintf("%s:%d", *pprofHost, *pprofPort)
-	logrus.Infof("pprof Listening on: %s", pprofAddr)
-	logrus.WithField("mux", "pprof").WithError(
-		http.ListenAndServe(pprofAddr, pprofMux),
-	).Fatal("ListenAndServe returned.")
-}
-
-// file not found error, used below
-var errNotFound = errors.New("entry not found")
-
-// helper to update disk metrics
-func updateMetrics(interval time.Duration, diskRoot string) {
-	logger := logrus.WithField("sync-loop", "updateMetrics")
-	ticker := time.NewTicker(interval)
-	for ; true; <-ticker.C {
-		_, bytesFree, bytesUsed, err := diskutil.GetDiskUsage(diskRoot)
-		if err != nil {
-			logger.WithError(err).Error("Failed to get disk metrics")
-		} else {
-			promMetrics.DiskFree.Set(float64(bytesFree) / 1e9)
-			promMetrics.DiskUsed.Set(float64(bytesUsed) / 1e9)
-			promMetrics.DiskTotal.Set(float64(bytesFree+bytesUsed) / 1e9)
-		}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := run(ctx, opts); err != nil {
+		logrus.WithError(err).Fatal("Hoshino stopped")
 	}
 }

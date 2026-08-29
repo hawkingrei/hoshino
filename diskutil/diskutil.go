@@ -14,16 +14,12 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-// Package diskutil implements disk related utilities for greenhouse
+// Package diskutil implements Bazel native disk-cache filesystem operations.
 package diskutil
 
 import (
-	"os"
+	"fmt"
 	"syscall"
-	"time"
-
-	"github.com/djherbis/atime"
-	log "github.com/sirupsen/logrus"
 )
 
 // GetDiskUsage wraps syscall.Statfs for usage in GCing the disk
@@ -33,33 +29,11 @@ func GetDiskUsage(path string) (percentBlocksFree float64, bytesFree, bytesUsed 
 	if err != nil {
 		return 0, 0, 0, err
 	}
-	percentBlocksFree = float64(stat.Bfree) / float64(stat.Blocks) * 100
-	bytesFree = stat.Bfree * uint64(stat.Bsize)
-	bytesUsed = (stat.Blocks - stat.Bfree) * uint64(stat.Bsize)
+	if stat.Blocks == 0 {
+		return 0, 0, 0, fmt.Errorf("filesystem reports zero blocks: %s", path)
+	}
+	percentBlocksFree = float64(stat.Bavail) / float64(stat.Blocks) * 100
+	bytesFree = stat.Bavail * uint64(stat.Bsize)
+	bytesUsed = (stat.Blocks - stat.Bavail) * uint64(stat.Bsize)
 	return percentBlocksFree, bytesFree, bytesUsed, nil
-}
-
-// GetATime the atime for a file, logging errors instead of failing
-// and returning defaultTime instead
-func GetATime(path string, defaultTime time.Time) time.Time {
-	at, err := atime.Stat(path)
-	if err != nil {
-		log.WithError(err).Errorf("Could not get atime for %s", path)
-		return defaultTime
-	}
-	return at
-}
-
-// file path helper
-func exists(path string) bool {
-	_, err := os.Stat(path)
-	return !os.IsNotExist(err)
-}
-
-// file path helper
-func ensureDir(dir string) error {
-	if exists(dir) {
-		return nil
-	}
-	return os.MkdirAll(dir, os.FileMode(0744))
 }

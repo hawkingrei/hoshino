@@ -1,0 +1,39 @@
+load("@rules_go//go:def.bzl", "go_library", "go_test")
+
+go_library(
+    name = "eviction",
+    srcs = [
+        "checkpoint.go",
+        "lease.go",
+        "notify.go",
+        "notify_config.go",
+        "notify_other.go",
+        "observer.go",
+        "policy.go",
+    ],
+    importpath = "github.com/hawkingrei/hoshino/eviction",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//diskutil",
+        "//eviction/internal/heavykeeper",
+        "//eviction/internal/inotify",
+        "@com_github_sirupsen_logrus//:logrus",
+        "@org_golang_x_sys//unix",
+    ],
+)
+
+go_test(
+    name = "eviction_test",
+    srcs = [
+        "checkpoint_test.go",
+        "lease_test.go",
+        "notify_linux_test.go",
+        "policy_test.go",
+    ],
+    embed = [":eviction"],
+    deps = [
+        "//diskutil",
+        "//eviction/internal/heavykeeper",
+        "@org_golang_x_sys//unix",
+    ],
+)
