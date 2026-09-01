@@ -195,15 +195,22 @@ func (w *Watcher) readEvents() {
 					// The filename is padded with NUL bytes. TrimRight() gets rid of those.
 					event.Name += "/" + strings.TrimRight(string(bytes[0:nameLen]), "\000")
 				}
-				select {
-				case w.Event <- event:
-				default:
-					w.reportError(ErrEventOverflow)
+				if !w.sendEvent(event) {
+					return
 				}
 			}
 			// Move to the next event in the buffer
 			offset += syscall.SizeofInotifyEvent + nameLen
 		}
+	}
+}
+
+func (w *Watcher) sendEvent(event *Event) bool {
+	select {
+	case w.Event <- event:
+		return true
+	case <-w.done:
+		return false
 	}
 }
 

@@ -42,9 +42,11 @@ type Notify struct {
 	evicting       bool
 	now            func() time.Time
 	getDiskUsage   diskUsageGetter
+	getEntries     cacheEntriesGetter
 }
 
 type diskUsageGetter func(path string) (percentBlocksFree float64, bytesFree, bytesUsed uint64, err error)
+type cacheEntriesGetter func() ([]diskutil.EntryInfo, error)
 
 func New(config Config) (*Notify, error) {
 	if err := config.Policy.Validate(); err != nil {
@@ -80,6 +82,7 @@ func New(config Config) (*Notify, error) {
 		observer:       observer,
 		now:            time.Now,
 		getDiskUsage:   diskutil.GetDiskUsage,
+		getEntries:     cache.GetEntries,
 	}, nil
 }
 
@@ -196,10 +199,10 @@ func (n *Notify) reconcile(resetHeat bool) error {
 		_ = watcher.Close()
 		return fmt.Errorf("rebuild inotify watches: %w", err)
 	}
-	entries, err := n.cache.GetEntries()
+	entries, err := n.scanEntriesWhileDraining(watcher)
 	if err != nil {
 		_ = watcher.Close()
-		return fmt.Errorf("rescan disk cache: %w", err)
+		return err
 	}
 	n.watcher = watcher
 	if resetHeat {
@@ -210,6 +213,66 @@ func (n *Notify) reconcile(resetHeat bool) error {
 	n.observer.RecordReconciliation()
 	n.ready.Store(true)
 	n.observer.SetReady(true)
+	return nil
+}
+
+func (n *Notify) scanEntriesWhileDraining(watcher *inotify.Watcher) ([]diskutil.EntryInfo, error) {
+	stop := make(chan struct{})
+	drainDone := make(chan error, 1)
+	go func() {
+		drainDone <- n.drainReconciliationEvents(stop, watcher)
+	}()
+
+	entries, scanErr := n.getEntries()
+	close(stop)
+	drainErr := <-drainDone
+	if scanErr != nil {
+		return nil, fmt.Errorf("rescan disk cache: %w", scanErr)
+	}
+	if drainErr != nil {
+		return nil, drainErr
+	}
+	return entries, nil
+}
+
+func (n *Notify) drainReconciliationEvents(stop <-chan struct{}, watcher *inotify.Watcher) error {
+	for {
+		select {
+		case <-stop:
+			return nil
+		case event, ok := <-watcher.Event:
+			if !ok {
+				return errors.New("inotify event channel closed during reconciliation")
+			}
+			if err := n.handleReconciliationEvent(watcher, event); err != nil {
+				return err
+			}
+		case err, ok := <-watcher.Error:
+			if !ok {
+				return errors.New("inotify error channel closed during reconciliation")
+			}
+			if errors.Is(err, inotify.ErrEventOverflow) {
+				return fmt.Errorf("inotify queue overflow during reconciliation: %w", err)
+			}
+			return fmt.Errorf("inotify watcher error during reconciliation: %w", err)
+		}
+	}
+}
+
+func (n *Notify) handleReconciliationEvent(watcher *inotify.Watcher, event *inotify.Event) error {
+	if event == nil {
+		return nil
+	}
+	if event.HasEvent(inotify.InUnmount) || event.HasEvent(inotify.InIgnored) ||
+		event.HasEvent(inotify.InDeleteSelf) || event.HasEvent(inotify.InMoveSelf) {
+		return fmt.Errorf("watch coverage changed during reconciliation for %s", event.Name)
+	}
+	if event.HasEvent(inotify.InIsdir) &&
+		(event.HasEvent(inotify.InCreate) || event.HasEvent(inotify.InMovedTo)) {
+		if err := n.addDirectoryWatches(watcher, filepath.Clean(event.Name)); err != nil {
+			return fmt.Errorf("watch new cache directory during reconciliation: %w", err)
+		}
+	}
 	return nil
 }
 
@@ -302,9 +365,8 @@ func (n *Notify) handleEvent(event *inotify.Event) error {
 	if !event.HasEvent(inotify.InOpen) && !event.HasEvent(inotify.InMovedTo) {
 		return nil
 	}
-	if _, err := n.cache.Snapshot(key); err != nil {
-		return nil
-	}
+	// Access events only influence heat ranking. Cache cleanup snapshots and
+	// revalidates entries before deletion, so avoid filesystem I/O on this hot path.
 	n.heavykeeper.Add(key, 1)
 	if event.HasEvent(inotify.InOpen) {
 		n.observer.RecordAccess(kind)

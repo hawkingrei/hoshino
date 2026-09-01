@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -106,6 +107,78 @@ func TestRecoverWatcherResetsHeatAndStartsWarmup(t *testing.T) {
 		t.Fatalf("recovery state = ready %v, warm until %s", notify.Ready(), notify.warmUntil)
 	}
 }
+
+func TestReconcileDrainsEventsWhileScanning(t *testing.T) {
+	root := t.TempDir()
+	digest := strings.Repeat("d", 64)
+	entryPath := filepath.Join(root, "cas", "dd", digest)
+	if err := os.MkdirAll(filepath.Dir(entryPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(entryPath, []byte("cache"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy := validPolicy()
+	policy.DiskCheckInterval = time.Hour
+	policy.CheckpointInterval = time.Hour
+	policy.TopKDecayInterval = time.Hour
+	notify, err := New(Config{
+		CacheDir:       root,
+		ActivityLock:   filepath.Join(t.TempDir(), "activity.lock"),
+		CheckpointFile: filepath.Join(t.TempDir(), "hot-set.json"),
+		Policy:         policy,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalGetEntries := notify.getEntries
+	scanStarted := make(chan struct{})
+	releaseScan := make(chan struct{})
+	var scans atomic.Int32
+	notify.getEntries = func() ([]diskutil.EntryInfo, error) {
+		if scans.Add(1) == 1 {
+			close(scanStarted)
+			<-releaseScan
+		}
+		return originalGetEntries()
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- notify.Run(ctx) }()
+	select {
+	case <-scanStarted:
+	case <-time.After(time.Second):
+		t.Fatal("initial reconciliation did not start")
+	}
+
+	for range watcherEventBufferSizeForTest + 1 {
+		file, err := os.Open(entryPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	close(releaseScan)
+	waitFor(t, 5*time.Second, notify.Ready, "notify readiness after event burst")
+	if got := scans.Load(); got != 1 {
+		t.Fatalf("cache scans = %d, want 1 without watcher recovery", got)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not stop after cancellation")
+	}
+}
+
+const watcherEventBufferSizeForTest = 4096
 
 func waitFor(t *testing.T, timeout time.Duration, condition func() bool, description string) {
 	t.Helper()

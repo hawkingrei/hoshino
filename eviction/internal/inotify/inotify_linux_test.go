@@ -120,3 +120,49 @@ func TestReportOverflow(t *testing.T) {
 		t.Fatalf("reported error = %v, want %v", err, ErrEventOverflow)
 	}
 }
+
+func TestSendEventAppliesBackpressure(t *testing.T) {
+	watcher := &Watcher{
+		Event: make(chan *Event),
+		done:  make(chan struct{}),
+	}
+	event := &Event{Name: "cache-entry", Mask: InOpen}
+	sent := make(chan bool, 1)
+	go func() {
+		sent <- watcher.sendEvent(event)
+	}()
+
+	select {
+	case <-sent:
+		t.Fatal("sendEvent returned before the event was consumed")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	if received := <-watcher.Event; received != event {
+		t.Fatalf("received event = %p, want %p", received, event)
+	}
+	if ok := <-sent; !ok {
+		t.Fatal("sendEvent reported cancellation after delivering the event")
+	}
+}
+
+func TestSendEventStopsWhenWatcherCloses(t *testing.T) {
+	watcher := &Watcher{
+		Event: make(chan *Event),
+		done:  make(chan struct{}),
+	}
+	sent := make(chan bool, 1)
+	go func() {
+		sent <- watcher.sendEvent(&Event{Name: "cache-entry", Mask: InOpen})
+	}()
+
+	close(watcher.done)
+	select {
+	case ok := <-sent:
+		if ok {
+			t.Fatal("sendEvent delivered an event after cancellation")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("sendEvent did not stop after cancellation")
+	}
+}
