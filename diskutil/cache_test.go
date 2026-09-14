@@ -58,6 +58,48 @@ func TestGetEntriesExcludesUnknownAndSymlinkPaths(t *testing.T) {
 	}
 }
 
+func TestGetEntriesExcludesRepositoryCaches(t *testing.T) {
+	root := t.TempDir()
+	digest := strings.Repeat("a", 64)
+	want := map[string]bool{
+		"ac/aa/" + digest:  true,
+		"cas/aa/" + digest: true,
+	}
+	for key := range want {
+		writeTestFile(t, filepath.Join(root, filepath.FromSlash(key)))
+	}
+	repository := filepath.Join(root, "contents", digest, "00000000-0000-4000-8000-000000000001")
+	for _, path := range []string{
+		filepath.Join(repository, "MODULE.bazel"),
+		filepath.Join(repository, "ac", "aa", digest),
+		filepath.Join(repository, "cas", "aa", digest),
+		filepath.Join(root, "content_addressable", "sha256", digest, "file"),
+	} {
+		writeTestFile(t, path)
+	}
+	if err := os.Symlink("missing-uuid", filepath.Join(root, "contents", digest, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+
+	cache, err := NewCache(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := cache.GetEntries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != len(want) {
+		t.Fatalf("GetEntries() = %#v, want only native disk-cache entries", entries)
+	}
+	for _, entry := range entries {
+		if !want[entry.Key] {
+			t.Fatalf("unexpected cache entry: %q", entry.Key)
+		}
+		delete(want, entry.Key)
+	}
+}
+
 func TestDeleteRejectsReplacement(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("secure deletion is Linux-only")
