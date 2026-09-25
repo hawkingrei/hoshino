@@ -34,9 +34,10 @@ bazel test //...
 bazel build //:image
 ```
 
-The OCI image uses a digest-pinned distroless non-root base. Merges to `master`
-publish `ghcr.io/hawkingrei/hoshino:<commit-sha>`; consumers must resolve and
-pin the resulting image digest.
+The OCI image uses digest-pinned distroless non-root bases and publishes a
+multi-platform index for Linux amd64 and arm64. Merges to `master` publish
+`ghcr.io/hawkingrei/hoshino:<commit-sha>`; consumers must resolve and pin the
+resulting image-index digest.
 
 ## Runtime contract
 
