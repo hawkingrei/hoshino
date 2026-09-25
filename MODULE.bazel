@@ -30,12 +30,12 @@ oci.pull(
     image = "gcr.io/distroless/static-debian12",
     platforms = [
         "linux/amd64",
-        "linux/arm64",
+        "linux/arm64/v8",
     ],
 )
 use_repo(
     oci,
     "distroless_static_debian12_nonroot",
     "distroless_static_debian12_nonroot_linux_amd64",
-    "distroless_static_debian12_nonroot_linux_arm64",
+    "distroless_static_debian12_nonroot_linux_arm64_v8",
 )

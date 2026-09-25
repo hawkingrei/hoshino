@@ -112,7 +112,7 @@ oci_image(
 
 oci_image(
     name = "image_arm64",
-    base = "@distroless_static_debian12_nonroot_linux_arm64",
+    base = "@distroless_static_debian12_nonroot_linux_arm64_v8",
     entrypoint = ["/usr/local/bin/hoshino"],
     labels = {
         "org.opencontainers.image.description": "Node-local Bazel disk-cache heat tracking and safe eviction",
