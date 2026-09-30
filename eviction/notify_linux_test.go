@@ -13,6 +13,7 @@ import (
 
 	"github.com/hawkingrei/hoshino/diskutil"
 	"github.com/hawkingrei/hoshino/eviction/internal/heavykeeper"
+	"github.com/hawkingrei/hoshino/eviction/internal/inotify"
 	"golang.org/x/sys/unix"
 )
 
@@ -239,6 +240,124 @@ func TestCleanupDeletesValidatedColdEntry(t *testing.T) {
 	if observer.deleted == 0 {
 		t.Fatal("deletion was not observed")
 	}
+}
+
+func TestWatchersIgnoreRepositoryCaches(t *testing.T) {
+	for _, mode := range []string{"initial", "created", "moved", "reconciliation"} {
+		t.Run(mode, func(t *testing.T) {
+			notify, _, _ := newCleanupTestNotify(t, false)
+			watcher, err := inotify.NewWatcher()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer watcher.Close()
+			notify.watcher = watcher
+			root := notify.cache.DiskRoot()
+			if mode != "initial" {
+				if err := notify.addDirectoryWatches(watcher, root); err != nil {
+					t.Fatal(err)
+				}
+			}
+			files, _ := writeRepositoryCacheFixtures(t, root)
+			if mode == "initial" {
+				if err := notify.addDirectoryWatches(watcher, root); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				for _, directory := range []string{"contents", "content_addressable"} {
+					event := &inotify.Event{
+						Name: filepath.Join(root, directory),
+						Mask: inotify.InCreate | inotify.InIsdir,
+					}
+					if mode == "moved" {
+						event.Mask = inotify.InMovedTo | inotify.InIsdir
+					}
+					if mode == "reconciliation" {
+						err = notify.handleReconciliationEvent(watcher, event)
+					} else {
+						err = notify.handleEvent(event)
+					}
+					if err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			for path := range files {
+				for directory := filepath.Dir(path); directory != root; directory = filepath.Dir(directory) {
+					if err := watcher.RemoveWatch(directory); err == nil {
+						t.Fatalf("repository-cache directory was watched: %s", directory)
+					}
+				}
+			}
+			if notify.heavykeeper.Len() != 0 {
+				t.Fatal("repository-cache entries polluted the hot set")
+			}
+			for _, directory := range []string{root, filepath.Join(root, "cas", "aa")} {
+				if err := watcher.RemoveWatch(directory); err != nil {
+					t.Fatalf("native disk-cache directory was not watched: %v", err)
+				}
+			}
+		})
+	}
+}
+
+func TestCleanupPreservesRepositoryCaches(t *testing.T) {
+	notify, entryPath, observer := newCleanupTestNotify(t, false)
+	files, links := writeRepositoryCacheFixtures(t, notify.cache.DiskRoot())
+	if err := notify.cleanup(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(entryPath); !os.IsNotExist(err) {
+		t.Fatalf("native cold entry was not deleted: %v", err)
+	}
+	if observer.deleted != 1024 {
+		t.Fatalf("deleted bytes = %d, want only the 1024-byte native entry", observer.deleted)
+	}
+	for path, want := range files {
+		got, err := os.ReadFile(path)
+		if err != nil || string(got) != want {
+			t.Fatalf("repository-cache file changed: %s: got %q, %v", path, got, err)
+		}
+	}
+	for path, want := range links {
+		got, err := os.Readlink(path)
+		if err != nil || got != want {
+			t.Fatalf("repository-cache link changed: %s: got %q, %v", path, got, err)
+		}
+	}
+}
+
+func writeRepositoryCacheFixtures(t *testing.T, root string) (map[string]string, map[string]string) {
+	t.Helper()
+	digest := strings.Repeat("b", 64)
+	repository := filepath.Join(root, "contents", digest, "00000000-0000-4000-8000-000000000001")
+	files := map[string]string{
+		filepath.Join(repository, "MODULE.bazel"):                            "module(name = \"fixture\")\n",
+		filepath.Join(repository, "ac", "bb", digest):                        "repository action fixture",
+		filepath.Join(repository, "cas", "bb", digest):                       "repository content fixture",
+		filepath.Join(root, "content_addressable", "sha256", digest, "file"): "downloaded archive",
+	}
+	old := time.Now().Add(-3 * time.Hour)
+	for path, content := range files {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, old, old); err != nil {
+			t.Fatal(err)
+		}
+	}
+	links := map[string]string{
+		filepath.Join(root, "contents", digest, "dangling"): "missing-uuid",
+	}
+	for path, target := range links {
+		if err := os.Symlink(target, path); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return files, links
 }
 
 func TestSelectVictimsDoesNotDoubleCountRefreshedFreeSpace(t *testing.T) {

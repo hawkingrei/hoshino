@@ -45,6 +45,23 @@ Mount one node-local cache root into one Hoshino instance and the eligible
 private Bazel Pods on that node. Do not run multiple Hoshino instances against
 the same cache root.
 
+Keep `--repository_cache` outside `--disk_cache`, using disjoint resolved
+directories rather than nested paths. Bazel's repo contents cache defaults to
+`{--repository_cache}/contents`; an explicit `--repo_contents_cache` must also
+remain outside the disk-cache root. Hoshino ignores repository-cache layouts,
+but Bazel's built-in disk-cache GC can traverse and delete their files when
+the roots overlap. See the
+[Bazel 9.2.0 collector](https://github.com/bazelbuild/bazel/blob/9.2.0/src/main/java/com/google/devtools/build/lib/remote/disk/DiskCacheGarbageCollector.java).
+
+When Hoshino owns active eviction, disable Bazel's built-in disk-cache GC for
+every invocation sharing that cache by setting both
+`--experimental_disk_cache_gc_max_size=0` and
+`--experimental_disk_cache_gc_max_age=0`. The activity lease below does not
+coordinate with Bazel's background GC, which uses its own `gc/lock`. Stop or
+reconfigure existing Bazel servers sharing the cache before enabling active
+eviction; flags on a new invocation do not reconfigure idle servers belonging
+to other workspaces. Keep other independent cleaners off the same root.
+
 Hoshino defaults match the initial Prow pilot:
 
 - shadow mode enabled;
@@ -69,6 +86,9 @@ the entire invocation:
 flock --shared /var/cache-control/bazel-cache.activity.lock \
   bazel test \
     --disk_cache=/var/cache/bazel \
+    --repository_cache=/var/cache/bazel-repositories \
+    --experimental_disk_cache_gc_max_size=0 \
+    --experimental_disk_cache_gc_max_age=0 \
     --remote_cache=https://storage.googleapis.com/bazel-cache-nowledge \
     --google_default_credentials \
     //...
